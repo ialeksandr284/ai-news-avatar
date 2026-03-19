@@ -145,7 +145,9 @@ def build_keyboard(update_id: int) -> str:
 def build_reply_keyboard() -> str:
     return json.dumps(
         {
-            "keyboard": [[{"text": "Статистика"}]],
+            "keyboard": [
+                [{"text": "Статистика"}, {"text": "Скаут"}],
+            ],
             "resize_keyboard": True,
             "persistent_keyboard": True,
         },
@@ -274,23 +276,47 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
 
 def handle_text_command(text: str, expected_chat_id: int) -> bool:
     normalized = text.strip().lower()
-    if normalized != "статистика":
-        return False
+    if normalized == "статистика":
+        creds = get_credentials()
+        youtube = build("youtube", "v3", credentials=creds)
+        videos = get_recent_videos(youtube, limit=5)
+        report = format_report(videos)
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": expected_chat_id,
+                "text": report,
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
+        return True
 
-    creds = get_credentials()
-    youtube = build("youtube", "v3", credentials=creds)
-    videos = get_recent_videos(youtube, limit=5)
-    report = format_report(videos)
-    safe_telegram_post(
-        "sendMessage",
-        {
-            "chat_id": expected_chat_id,
-            "text": report,
-            "disable_web_page_preview": "true",
-            "reply_markup": build_reply_keyboard(),
-        },
-    )
-    return True
+    if normalized == "скаут":
+        news_scout_script = ROOT / "scripts" / "news_scout.py"
+        result = subprocess.run(
+            [os.environ.get("PYTHON_BIN", "python3"), str(news_scout_script)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        message = "Запустил news scout."
+        if result.returncode != 0:
+            message = "Не смог запустить news scout."
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": expected_chat_id,
+                "text": message,
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
+        return True
+
+    return False
 
 
 def main() -> int:
