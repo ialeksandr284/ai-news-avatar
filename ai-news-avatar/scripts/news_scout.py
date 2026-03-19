@@ -86,6 +86,13 @@ DEPRIORITIZED_KEYWORDS = [
     "love, and hate",
     "opinion",
     "workflow setup",
+    "setup",
+    "github setup",
+    "garry tan",
+    "colab mcp",
+    "mcp server",
+    "connect any ai agent",
+    "claude code setup",
 ]
 
 FEEDS = [
@@ -96,6 +103,7 @@ FEEDS = [
     ("The Verge AI", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
     ("The Verge AI Creators", "https://www.theverge.com/rss/creators/index.xml"),
     ("TechCrunch Media & Entertainment", "https://techcrunch.com/category/media-entertainment/feed/"),
+    ("TechCrunch Startups", "https://techcrunch.com/category/startups/feed/"),
     ("Hugging Face", "https://huggingface.co/blog/feed.xml"),
     ("Mistral", "https://mistral.ai/news/rss.xml"),
 ]
@@ -311,7 +319,8 @@ def shortlist(entries: list[dict], existing_links: set[str], limit: int = 3) -> 
         seen.add(link)
 
     deduped.sort(key=lambda item: (item["score"], item["published_at"]), reverse=True)
-    return deduped[:limit]
+    internal_pool = deduped[:15]
+    return internal_pool[:limit]
 
 
 def append_inbox_entry(item_id: int, entry: dict) -> None:

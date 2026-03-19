@@ -390,35 +390,56 @@ def build_hashtags(item: dict) -> str:
     return " ".join(base[:4])
 
 
+def sanitize_generated_script(text: str) -> str:
+    cleaned = clean_html_entities(text or "")
+    cleaned = re.sub(r"(?im)^\s*(хук|hook|стиль|style|заголовок|title|хештеги|hashtags)\s*:\s*", "", cleaned)
+    cleaned = re.sub(r"https?://\S+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .\n")
+    return cleaned
+
+
+def looks_like_publishable_russian_script(text: str) -> bool:
+    cleaned = sanitize_generated_script(text)
+    if not cleaned:
+        return False
+    latin = len(re.findall(r"[A-Za-z]", cleaned))
+    cyr = len(re.findall(r"[А-Яа-яЁё]", cleaned))
+    if cyr < 80:
+        return False
+    if latin > cyr // 3:
+        return False
+    return True
+
+
 def build_video_copy_variants(title: str, fact: str) -> list[dict]:
     variants = [
         {
             "video_title": title,
             "script": (
-                f"Если ты следишь за AI-инструментами для контента, вот коротко что произошло. "
+                f"Похоже, это одна из тех AI-новостей, которые быстро разлетаются далеко за пределы гиковской аудитории. "
                 f"{title}. "
-                f"По сути, {fact}. "
-                f"И это как раз тот случай, когда новость можно быстро перевести в практику, а не просто обсудить и забыть."
+                f"Если коротко, {fact}. "
+                f"Главное здесь в том, что выгода считывается почти сразу, особенно если ты делаешь видео, картинки или любой контент."
             ),
-            "angle": "практическая подача",
+            "angle": "массовый охват",
         },
         {
             "video_title": f"{title}: почему об этом все говорят",
             "script": (
-                f"Похоже, это одна из тех AI-новостей, которые быстро расходятся не только у гиков. "
+                f"Если ты работаешь с AI-контентом, вот новость, которая реально может сэкономить тебе время и тесты. "
                 f"{title}. "
-                f"Если совсем коротко, {fact}. "
-                f"История цепляет потому, что эффект понятен почти сразу, особенно если ты делаешь видео, картинки или любой контент."
+                f"По факту, {fact}. "
+                f"И это как раз тот случай, когда новость не ради шума, а с понятной пользой, которую можно быстро забрать себе в работу."
             ),
-            "angle": "охватный заход",
+            "angle": "прикладная польза",
         },
         {
             "video_title": f"{title}: что это меняет на практике",
             "script": (
-                f"Вот новость, которую сегодня точно будут пересказывать все, кто работает с AI-контентом. "
+                f"Вот новость, которую сегодня точно будут пересказывать все, кто делает AI-видео, изображения и контент. "
                 f"{title}. "
-                f"Смысл новости такой: {fact}. "
-                f"Именно такие сюжеты обычно набирают лучше, потому что за 20 секунд уже понятно, зачем человеку вообще это знать."
+                f"Суть очень простая: {fact}. "
+                f"Именно такие истории цепляют лучше всего, потому что уже в первой фразе понятно, что меняется для обычного пользователя, а не только для разработчиков."
             ),
             "angle": "виральный пересказ",
         },
@@ -456,15 +477,17 @@ def build_script_variants(item: dict) -> list[dict]:
     stats = best_hook_notes()
     variants = build_video_copy_variants(title, fact)
 
-    if base_script and not using_local_fallback:
-        variants[0]["script"] = textwrap.shorten(base_script, width=SCRIPT_MAX_CHARS, placeholder="...")
+    if base_script and not using_local_fallback and looks_like_publishable_russian_script(base_script):
+        variants[0]["script"] = textwrap.shorten(
+            sanitize_generated_script(base_script), width=SCRIPT_MAX_CHARS, placeholder="..."
+        )
 
     for variant in variants:
         if stats["top_title"] and stats["best_views"]:
             if "релиза" in stats["hook_style"] or "релиз" in stats["hook_style"]:
                 variant["script"] = variant["script"].replace(
-                    "Именно такие сюжеты обычно набирают лучше, потому что за 20 секунд уже понятно, зачем человеку вообще это знать.",
-                    "Такие сюжеты заходят лучше, когда с первых секунд чувствуешь, что это реальный новый релиз или заметный апдейт.",
+                    "Именно такие истории цепляют лучше всего, потому что уже в первой фразе понятно, что меняется для обычного пользователя, а не только для разработчиков.",
+                    "Такие сюжеты заходят лучше, когда с первых секунд чувствуешь, что это реальный новый релиз или заметный апдейт с понятной пользой.",
                 )
         variant["hashtags"] = build_hashtags(item)
     return variants
