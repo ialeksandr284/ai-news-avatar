@@ -640,34 +640,235 @@ def looks_like_publishable_russian_script(text: str) -> bool:
     return True
 
 
+def strip_noise_lines(text: str) -> str:
+    lines = []
+    for raw in (text or "").splitlines():
+        line = clean_html_entities(raw).strip()
+        if not line:
+            continue
+        if line.startswith("http://") or line.startswith("https://"):
+            continue
+        if line.startswith("@"):
+            continue
+        if line.lower().startswith("источник:"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def split_sentences(text: str) -> list[str]:
+    chunks = []
+    for sentence in re.split(r"(?<=[.!?])\s+", clean_html_entities(text or "")):
+        cleaned = re.sub(r"\s+", " ", sentence).strip(" .\n")
+        if cleaned:
+            chunks.append(cleaned)
+    return chunks
+
+
+def detect_topic(haystack: str) -> str:
+    lower = haystack.lower()
+    if any(word in lower for word in ["prompt library", "prompts", "github", "library"]) and "seedance" in lower:
+        return "prompt_library"
+    if any(word in lower for word in ["video", "veo", "sora", "seedance", "runway", "render"]):
+        return "video"
+    if any(word in lower for word in ["image", "photo", "photoshop", "midjourney"]):
+        return "image"
+    if any(word in lower for word in ["avatar", "voice", "speech", "audio"]):
+        return "avatar_voice"
+    if any(word in lower for word in ["chatgpt", "gpt", "claude", "gemini", "grok"]):
+        return "assistant"
+    return "general"
+
+
+def detect_product_name(haystack: str) -> str:
+    mapping = [
+        ("seedance", "Seedance 2.0"),
+        ("chatgpt", "ChatGPT"),
+        ("gpt-5.4", "GPT-5.4"),
+        ("gpt", "GPT"),
+        ("claude code", "Claude Code"),
+        ("claude", "Claude"),
+        ("gemini", "Gemini"),
+        ("grok", "Grok"),
+        ("runway", "Runway"),
+        ("veo", "Veo"),
+        ("sora", "Sora"),
+        ("midjourney", "Midjourney"),
+        ("photoshop", "Photoshop"),
+        ("anthropic", "Anthropic"),
+        ("openai", "OpenAI"),
+        ("google", "Google"),
+    ]
+    lower = haystack.lower()
+    for key, value in mapping:
+        if key in lower:
+            return value
+    return ""
+
+
+def score_fact_sentence(sentence: str, product: str) -> int:
+    lower = sentence.lower()
+    score = 0
+    if 45 <= len(sentence) <= 220:
+        score += 2
+    if product and product.lower() in lower:
+        score += 4
+    for token in [
+        "launch",
+        "launched",
+        "release",
+        "released",
+        "announced",
+        "introduces",
+        "introduced",
+        "now",
+        "can",
+        "lets",
+        "support",
+        "supports",
+        "add",
+        "added",
+        "new",
+        "video",
+        "image",
+        "creator",
+        "prompt",
+        "github",
+        "model",
+        "tool",
+        "feature",
+    ]:
+        if token in lower:
+            score += 1
+    if any(bad in lower for bad in ["cookie", "privacy", "subscribe", "advertisement", "all rights reserved"]):
+        score -= 5
+    if sentence.count("...") > 0:
+        score -= 2
+    return score
+
+
+def pick_concrete_fact(item: dict, article_text: str, fallback_fact: str) -> str:
+    source_text = strip_noise_lines(item.get("text", ""))
+    title_line = source_text.splitlines()[0].strip() if source_text.splitlines() else ""
+    haystack = f"{title_line}\n{source_text}\n{article_text}".strip()
+    product = detect_product_name(haystack)
+
+    candidates = split_sentences(article_text) + split_sentences(source_text)
+    ranked = sorted(
+        {sentence for sentence in candidates if sentence},
+        key=lambda sentence: score_fact_sentence(sentence, product),
+        reverse=True,
+    )
+    for sentence in ranked:
+        candidate = rough_translate_text(sentence)
+        candidate = re.sub(r"\s+", " ", candidate).strip(" .")
+        if len(candidate) < 55:
+            continue
+        if fact_is_generic(candidate):
+            continue
+        if title_line:
+            candidate = re.sub(rf"^{re.escape(title_line)}[\s:.-]*", "", candidate, flags=re.IGNORECASE).strip()
+        if candidate:
+            return textwrap.shorten(candidate, width=190, placeholder="...")
+
+    return fallback_fact
+
+
+def build_specific_title(item: dict, fact: str) -> str:
+    source_text = strip_noise_lines(item.get("text", ""))
+    title_line = source_text.splitlines()[0].strip() if source_text.splitlines() else ""
+    haystack = f"{title_line} {fact} {source_text}"
+    topic = detect_topic(haystack)
+    product = detect_product_name(haystack)
+
+    if topic == "prompt_library" and product:
+        return f"Для {product} собрали большую библиотеку промптов"
+    if topic == "video" and product:
+        return f"У {product} появилось важное обновление для AI-видео"
+    if topic == "image" and product:
+        return f"{product} получил заметное обновление для картинок"
+    if topic == "avatar_voice" and product:
+        return f"У {product} появился новый инструмент для аватаров и озвучки"
+    if topic == "assistant" and product:
+        return f"{product} получил заметное обновление"
+    if title_line and not is_mostly_english(title_line) and len(title_line) > 16:
+        return textwrap.shorten(title_line, width=90, placeholder="...")
+    if product:
+        return f"У {product} вышло новое AI-обновление"
+    return build_russian_title(item, fact)
+
+
+def build_editor_fact(item: dict, article_text: str, fallback_fact: str) -> str:
+    source_text = strip_noise_lines(item.get("text", ""))
+    title_line = source_text.splitlines()[0].strip() if source_text.splitlines() else ""
+    haystack = f"{title_line}\n{source_text}\n{article_text}"
+    topic = detect_topic(haystack)
+    product = detect_product_name(haystack)
+
+    if topic == "prompt_library" and product:
+        return f"на GitHub уже собрали большую библиотеку промптов и референсов для {product}, чтобы не тестировать всё с нуля"
+
+    if topic == "video" and product:
+        if any(word in haystack.lower() for word in ["real-time", "realtime", "live"]):
+            return f"у {product} показали обновление для AI-видео с акцентом на более быстрый и живой результат"
+        return f"у {product} появилось обновление для AI-видео, которое пытаются быстро примерить к реальной работе"
+
+    if topic == "image" and product:
+        return f"{product} получил обновление для картинок, которое может упростить редактирование и ускорить визуальный продакшн"
+
+    if topic == "avatar_voice" and product:
+        return f"у {product} появился инструмент, который упрощает аватары, озвучку и сборку коротких роликов"
+
+    if topic == "assistant" and product:
+        if "github" in haystack.lower():
+            return f"вокруг {product} снова разошлась практическая находка с GitHub, которую сразу начали примерять к реальным сценариям"
+        return f"{product} получил обновление, которое быстро начинают примерять к обычной работе и созданию контента"
+
+    return fallback_fact
+
+
+def build_viewer_value_from_topic(item: dict, fact: str) -> str:
+    haystack = f"{item.get('text', '')} {fact}"
+    topic = detect_topic(haystack)
+    if topic == "prompt_library":
+        return "это экономит часы тестов и помогает быстрее находить рабочие структуры промптов"
+    if topic == "video":
+        return "такие релизы быстро меняют качество, скорость и цену AI-видео для реальной работы"
+    if topic == "image":
+        return "такие обновления быстро доходят до рекламы, дизайна и генерации картинок под коммерческие задачи"
+    if topic == "avatar_voice":
+        return "это напрямую влияет на аватары, озвучку и производство коротких вертикальных роликов"
+    if topic == "assistant":
+        return "такие функции быстро доходят до реальных рабочих сценариев и ежедневного использования"
+    return "это быстро начинает влиять на рабочие сценарии и создание контента"
+
+
 def build_video_copy_variants(title: str, fact: str, listener_value: str) -> list[dict]:
     variants = [
         {
             "video_title": title,
             "script": (
-                f"{title}. "
-                f"Если коротко, {fact}. "
-                f"И самое важное здесь в том, что {listener_value}."
-            ),
-            "angle": "массовый охват",
-        },
-        {
-            "video_title": f"{title}: почему об этом все говорят",
-            "script": (
-                f"Если ты следишь за AI-новостями не ради шума, а ради пользы, вот что произошло. "
-                f"{title}. "
-                f"По сути, {fact}. "
-                f"Такие вещи расходятся сильнее, когда сразу понятно, что это меняет для обычного пользователя и создателя контента."
+                f"{fact[0].upper() + fact[1:] if fact else title}. "
+                f"Для зрителя и создателей контента это важно, потому что {listener_value}. "
+                f"Если коротко, это не просто ещё одна AI-новость, а штука, которую реально можно примерить к работе уже сейчас."
             ),
             "angle": "прикладная польза",
         },
         {
-            "video_title": f"{title}: что это меняет на практике",
+            "video_title": f"{title}: что в этом реально нового",
             "script": (
-                f"Это как раз та AI-новость, которую сегодня будут пересказывать все, кто следит за генерацией контента. "
-                f"{title}. "
-                f"Суть очень простая: {fact}. "
-                f"И здесь цепляет не просто сам релиз, а то, что {listener_value}."
+                f"Вот новость, которую стоит разбирать не ради хайпа, а ради практики. "
+                f"{fact[0].upper() + fact[1:] if fact else title}. "
+                f"Самое интересное тут в том, что {listener_value}, а значит это быстро дойдёт до обычных creator-сценариев."
+            ),
+            "angle": "редакторский разбор",
+        },
+        {
+            "video_title": f"{title}: почему это быстро разлетится",
+            "script": (
+                f"Такие AI-новости обычно быстро расходятся, когда у выгоды есть понятный человеческий смысл. "
+                f"{fact[0].upper() + fact[1:] if fact else title}. "
+                f"Здесь цепляет то, что {listener_value}, без долгих объяснений и техношума."
             ),
             "angle": "виральный пересказ",
         },
@@ -694,14 +895,16 @@ def build_script_variants(item: dict) -> list[dict]:
     except Exception:
         payload = {}
 
-    title_ru, body_ru = adapt_source_to_russian(item)
     article_text = fetch_article_text(item.get("link", ""))
+    title_ru, body_ru = adapt_source_to_russian(item)
     fact = compress_fact(body_ru, title_ru)
     fact = pick_article_fact(article_text, fact)
     fact = synthesize_fact_from_article(item, article_text, fact)
     fact = infer_russian_fact(item, fact)
-    title = build_russian_title(item, fact)
-    listener_value = build_listener_value(item, title, fact)
+    fact = pick_concrete_fact(item, article_text, fact)
+    fact = build_editor_fact(item, article_text, fact)
+    title = build_specific_title(item, fact)
+    listener_value = build_viewer_value_from_topic(item, fact)
     base_script = payload.get("script_ru")
     notes = payload.get("notes_ru", "")
     using_local_fallback = "локальный fallback" in notes.lower()
@@ -715,17 +918,8 @@ def build_script_variants(item: dict) -> list[dict]:
         )
 
     for variant in variants:
-        if title == "Вышла новая AI-функция, которую уже начали примерять к реальной работе":
-            variant["script"] = variant["script"].replace(
-                title,
-                "Вышло новое AI-обновление, которое уже пытаются быстро адаптировать под реальные рабочие сценарии",
-            )
-        if stats["top_title"] and stats["best_views"]:
-            if "релиза" in stats["hook_style"] or "релиз" in stats["hook_style"]:
-                variant["script"] = variant["script"].replace(
-                    "Именно такие истории цепляют лучше всего, потому что уже в первой фразе понятно, что меняется для обычного пользователя, а не только для разработчиков.",
-                    "Такие сюжеты заходят лучше, когда с первых секунд чувствуешь, что это реальный новый релиз или заметный апдейт с понятной пользой.",
-                )
+        if stats["top_title"] and stats["best_views"] and ("релиза" in stats["hook_style"] or "релиз" in stats["hook_style"]):
+            variant["video_title"] = variant["video_title"].replace("что в этом реально нового", "что здесь реально нового")
         variant["hashtags"] = build_hashtags(item)
     return variants
 
