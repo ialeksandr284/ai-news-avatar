@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,10 @@ SCOPES = [
 
 def get_credentials() -> Credentials:
     creds = None
-    if TOKEN_PATH.exists():
+    token_json = os.environ.get("YOUTUBE_TOKEN_JSON")
+    if token_json:
+        creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
+    elif TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
 
     if creds and creds.expired and creds.refresh_token:
@@ -94,7 +98,7 @@ def main() -> int:
         )
         return 1
 
-    if not CLIENT_SECRET.exists():
+    if not CLIENT_SECRET.exists() and not os.environ.get("YOUTUBE_TOKEN_JSON"):
         print(f"Missing client secret: {CLIENT_SECRET}", file=sys.stderr)
         return 1
 

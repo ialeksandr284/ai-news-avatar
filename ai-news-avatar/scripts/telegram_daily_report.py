@@ -35,6 +35,9 @@ def load_env(env_path: Path) -> None:
 
 
 def get_credentials() -> Credentials:
+    token_json = os.environ.get("YOUTUBE_TOKEN_JSON")
+    if token_json:
+        return Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
     return Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
 
 
