@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from urllib import parse, request
@@ -129,12 +130,20 @@ def build_keyboard(update_id: int) -> str:
         {
             "inline_keyboard": [
                 [
-                    {"text": "Оценить", "callback_data": f"assess:{update_id}"},
-                    {"text": "Сценарий", "callback_data": f"script:{update_id}"},
+                    {"text": "3 сценария", "callback_data": f"script:{update_id}"},
                 ],
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def build_render_keyboard(update_id: int, variant: int) -> str:
+    return json.dumps(
+        {
+            "inline_keyboard": [
                 [
-                    {"text": "В рендер", "callback_data": f"render:{update_id}"},
-                    {"text": "Стоп", "callback_data": f"stop:{update_id}"},
+                    {"text": f"В рендер вариант {variant}", "callback_data": f"render:{update_id}:{variant}"},
                 ],
             ]
         },
@@ -160,34 +169,70 @@ def short_title(text: str) -> str:
     return first_line[:90] if first_line else "Новая новость"
 
 
-def assess_item(item: dict) -> str:
-    text = item.get("text", "")
-    link = item.get("link", "")
-    score = 0
-    reasons = []
+def best_hook_notes() -> dict:
+    try:
+        creds = get_credentials()
+        youtube = build("youtube", "v3", credentials=creds)
+        videos = get_recent_videos(youtube, limit=5)
+    except Exception:
+        videos = []
 
-    if link:
-        score += 1
-        reasons.append("есть ссылка на источник")
-    if any(word in text.lower() for word in ["launch", "released", "выпуст", "анонс", "model", "api", "prompt", "seedance", "gemini", "openai", "anthropic"]):
-        score += 1
-        reasons.append("похоже на продуктовую или AI-новость")
-    if len(text) > 120:
-        score += 1
-        reasons.append("хватает контекста для короткого пересказа")
+    if not videos:
+        return {
+            "top_title": "",
+            "best_views": 0,
+            "hook_style": "начинать с явного последствия и громкого нового релиза",
+        }
 
-    verdict = "годится" if score >= 2 else "сомнительно"
-    return (
-        f"Оценка: {verdict}\n"
-        f"Причины: {', '.join(reasons) if reasons else 'мало данных'}\n"
-        f"Тема: {short_title(text)}"
-    )
+    best = max(videos, key=lambda item: item["views"])
+    title = best.get("title", "")
+    hook_style = "делать первую фразу более прикладной и заметной"
+    if any(word in title.lower() for word in ["google", "nano", "banana", "new", "нов"]):
+        hook_style = "лучше заходят новости с ощущением нового релиза и понятной пользы"
+
+    return {
+        "top_title": title,
+        "best_views": best.get("views", 0),
+        "hook_style": hook_style,
+    }
 
 
-def build_script(item: dict) -> str:
+def adapt_source_to_russian(item: dict) -> tuple[str, str]:
+    title = short_title(item.get("text", ""))
+    body = " ".join(line.strip() for line in item.get("text", "").splitlines()[1:] if line.strip())
+    body = body or item.get("text", "").strip()
+
+    title_ru = title
+    replacements = {
+        "OpenAI": "OpenAI",
+        "Google": "Google",
+        "Anthropic": "Anthropic",
+        "launches": "запустила",
+        "launch": "запуск",
+        "releases": "выпустила",
+        "release": "релиз",
+        "announces": "анонсировала",
+        "announced": "анонсировала",
+        "new model": "новую модель",
+        "video": "видео",
+        "image": "изображения",
+        "images": "изображения",
+        "voice": "голос",
+        "reasoning": "reasoning",
+        "agent": "агент",
+        "agents": "агенты",
+    }
+    for src, dst in replacements.items():
+        title_ru = title_ru.replace(src, dst)
+        body = body.replace(src, dst)
+
+    return title_ru.strip(), body.strip()
+
+
+def build_script_variants(item: dict) -> list[dict]:
     text = item.get("text", "").strip()
     if not text:
-        return "Черновик пока не собрался: в новости слишком мало текста."
+        return []
 
     try:
         result = subprocess.run(
@@ -201,25 +246,56 @@ def build_script(item: dict) -> str:
     except Exception:
         payload = {}
 
-    title = payload.get("story_title") or short_title(text)
-    hook = payload.get("hook_ru") or title
-    script = payload.get("script_ru")
+    title_ru, body_ru = adapt_source_to_russian(item)
+    title = payload.get("story_title") or title_ru or short_title(text)
+    base_hook = payload.get("hook_ru") or title
+    base_script = payload.get("script_ru")
     notes = payload.get("notes_ru", "")
 
-    if not script:
-        body = " ".join(line.strip() for line in text.splitlines()[1:] if line.strip())
-        if not body:
-            body = text
-        script = (
+    if not base_script:
+        base_script = (
             f"{title}. "
-            f"Коротко: {body[:210].rstrip()} "
-            f"Если тема взлетит, это стоит смотреть как сигнал для рынка и разработчиков."
+            f"Коротко: {body_ru[:170].rstrip()} "
+            f"Это может быстро разойтись по AI-комьюнити, если фича реально даёт заметный эффект."
         )
 
-    output = [f"Черновик сценария:\n\nХук: {hook}\n\n{script}"]
+    stats = best_hook_notes()
+    style_hint = stats["hook_style"]
+
+    variants = [
+        {
+            "hook": base_hook,
+            "script": base_script,
+            "angle": "прямой релиз",
+        },
+        {
+            "hook": f"Похоже, это одна из самых обсуждаемых AI-новостей дня: {title}",
+            "script": (
+                f"{title}. "
+                f"Смысл новости простой: {body_ru[:150].rstrip()}. "
+                f"Если это реально даст заметный результат в картинках, видео или контенте, история может быстро разойтись далеко за пределы гиковской аудитории."
+            ),
+            "angle": "виральный сигнал",
+        },
+        {
+            "hook": f"Вот AI-обновление, которое легко может залететь в охваты: {title}",
+            "script": (
+                f"{title}. "
+                f"По сути, речь про вот что: {body_ru[:145].rstrip()}. "
+                f"Я специально подаю это через угол массового эффекта, потому что у нас лучше заходят истории, где новая штука понятна за одну фразу и сразу чувствуется практический результат."
+            ),
+            "angle": "охватный угол",
+        },
+    ]
+
     if notes:
-        output.append(f"\nПримечание: {notes}")
-    return "".join(output)
+        variants[0]["script"] = f"{variants[0]['script']} Примечание: {notes}"
+
+    for variant in variants:
+        variant["script"] = textwrap.shorten(variant["script"], width=430, placeholder="...")
+        variant["meta"] = f"Стиль: {style_hint}. Лучший прошлый ролик: {stats['top_title']} ({stats['best_views']} views)."
+
+    return variants
 
 
 def update_item_status(items: dict, update_id: int, status: str) -> None:
@@ -237,8 +313,10 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
         return False
 
     try:
-        action, raw_update_id = data.split(":", 1)
-        update_id = int(raw_update_id)
+        parts = data.split(":")
+        action = parts[0]
+        update_id = int(parts[1])
+        variant_idx = int(parts[2]) if len(parts) > 2 else None
     except ValueError:
         return False
 
@@ -247,31 +325,77 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
         safe_telegram_post("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Новость не найдена"})
         return False
 
-    if action == "assess":
-        text = assess_item(item)
-    elif action == "script":
-        text = build_script(item)
+    if action == "script":
+        variants = build_script_variants(item)
+        item["script_variants"] = variants
         update_item_status(items, update_id, "scripted")
     elif action == "render":
-        text = "Ок, пометил новость как готовую к рендеру."
+        chosen = None
+        variants = item.get("script_variants", [])
+        if variant_idx and 1 <= variant_idx <= len(variants):
+            chosen = variants[variant_idx - 1]
+            item["chosen_variant"] = variant_idx
+            item["chosen_script"] = chosen["script"]
+            item["chosen_hook"] = chosen["hook"]
+        text = "Ок, пометил сценарий как готовый к рендеру."
+        if chosen:
+            text = (
+                f"Ок, отправляем в рендер вариант {variant_idx}.\n\n"
+                f"Хук: {chosen['hook']}\n\n"
+                f"{chosen['script']}"
+            )
         update_item_status(items, update_id, "ready_to_render")
-    elif action == "stop":
-        text = "Ок, остановил эту новость. В работу не беру."
-        update_item_status(items, update_id, "stopped")
     else:
         text = "Неизвестное действие."
 
     safe_telegram_post("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Готово"})
-    safe_telegram_post(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-            "reply_markup": build_reply_keyboard(),
-        },
-    )
-    return action in {"script", "render", "stop"}
+    if action == "script":
+        if not item.get("script_variants"):
+            safe_telegram_post(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Не смог собрать 3 сценария: в новости слишком мало сигнала.",
+                    "disable_web_page_preview": "true",
+                    "reply_markup": build_reply_keyboard(),
+                },
+            )
+        else:
+            safe_telegram_post(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Собрал 3 русских сценария с более охватными хуками.",
+                    "disable_web_page_preview": "true",
+                    "reply_markup": build_reply_keyboard(),
+                },
+            )
+            for idx, variant in enumerate(item["script_variants"], start=1):
+                safe_telegram_post(
+                    "sendMessage",
+                    {
+                        "chat_id": chat_id,
+                        "text": (
+                            f"Вариант {idx}\n\n"
+                            f"Хук: {variant['hook']}\n\n"
+                            f"{variant['script']}\n\n"
+                            f"{variant['meta']}"
+                        ),
+                        "disable_web_page_preview": "true",
+                        "reply_markup": build_render_keyboard(update_id, idx),
+                    },
+                )
+    else:
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
+    return action in {"script", "render"}
 
 
 def handle_text_command(text: str, expected_chat_id: int) -> bool:

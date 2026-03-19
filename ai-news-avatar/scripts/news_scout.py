@@ -86,7 +86,8 @@ FEEDS = [
     ("OpenAI", "https://openai.com/news/rss.xml"),
     ("Anthropic", "https://www.anthropic.com/news/rss.xml"),
     ("Google Blog AI", "https://blog.google/technology/ai/rss/"),
-    ("Google Developers", "https://developers.googleblog.com/feeds/posts/default"),
+    ("TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/"),
+    ("The Verge AI", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
     ("Hugging Face", "https://huggingface.co/blog/feed.xml"),
     ("Mistral", "https://mistral.ai/news/rss.xml"),
 ]
@@ -133,12 +134,7 @@ def build_keyboard(item_id: int) -> str:
         {
             "inline_keyboard": [
                 [
-                    {"text": "Оценить", "callback_data": f"assess:{item_id}"},
-                    {"text": "Сценарий", "callback_data": f"script:{item_id}"},
-                ],
-                [
-                    {"text": "В рендер", "callback_data": f"render:{item_id}"},
-                    {"text": "Стоп", "callback_data": f"stop:{item_id}"},
+                    {"text": "3 сценария", "callback_data": f"script:{item_id}"},
                 ],
             ]
         },
@@ -251,6 +247,12 @@ def score_entry(entry: dict) -> int:
     if any(word in haystack for word in ["video", "image", "avatar", "voice", "generator"]):
         score += 4
 
+    if any(word in haystack for word in ["chatgpt", "grok", "midjourney", "runway", "veo", "sora", "seedance"]):
+        score += 4
+
+    if any(word in haystack for word in ["create", "generate", "edit", "photo", "photos", "film", "movie", "creative"]):
+        score += 2
+
     if any(word in haystack for word in ["faster", "better", "cheaper", "real-time", "viral", "popular"]):
         score += 2
 
@@ -262,6 +264,9 @@ def score_entry(entry: dict) -> int:
         word in haystack for word in ["video", "image", "consumer", "search", "chatgpt", "gemini", "grok"]
     ):
         score -= 4
+
+    if "google developers" in entry["source"].lower():
+        score -= 3
 
     return score
 
