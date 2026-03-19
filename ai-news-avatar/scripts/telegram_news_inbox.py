@@ -23,6 +23,7 @@ ENV_PATH = PROJECT_ROOT / ".env"
 INBOX_PATH = ROOT / "inbox" / "news_inbox.md"
 STATE_PATH = ROOT / "inbox" / "telegram_state.json"
 ITEMS_PATH = ROOT / "inbox" / "news_items.json"
+POOL_PATH = ROOT / "inbox" / "news_pool.json"
 GROK_DRAFT_SCRIPT = ROOT / "scripts" / "grok_draft_engine.py"
 BUFFER_CHANNEL_ID = os.environ.get("BUFFER_CHANNEL_ID", "69ba7fe47be9f8b1716ad1c3")
 SCRIPT_MAX_CHARS = 330
@@ -84,9 +85,21 @@ def load_items() -> dict:
     return json.loads(ITEMS_PATH.read_text(encoding="utf-8"))
 
 
+def load_pool() -> dict:
+    if not POOL_PATH.exists():
+        return {"refreshed_at": "", "candidates": []}
+    return json.loads(POOL_PATH.read_text(encoding="utf-8"))
+
+
 def save_items(items: dict) -> None:
     ITEMS_PATH.parent.mkdir(parents=True, exist_ok=True)
     ITEMS_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def next_item_id(items: dict) -> int:
+    numeric_ids = [int(key) for key in items.keys() if str(key).isdigit()]
+    base = int(time.time())
+    return max(numeric_ids + [base]) + 1
 
 
 def extract_link(text: str) -> str:
@@ -177,6 +190,26 @@ def build_keyboard(update_id: int) -> str:
     )
 
 
+def build_scout_card(entry: dict) -> str:
+    synopsis = textwrap.shorten(clean_html_entities(entry.get("summary", "")).strip(), width=220, placeholder="...")
+    parts = [
+        "Найдена охватная AI-новость",
+        "",
+        entry.get("title", "").strip(),
+    ]
+    if synopsis:
+        parts.extend(["", f"Синопсис: {synopsis}"])
+    parts.extend(
+        [
+            "",
+            f"Источник: {entry.get('source', '').strip()}",
+            f"Скоринг: {entry.get('score', 0)}",
+            entry.get("link", "").strip(),
+        ]
+    )
+    return "\n".join(part for part in parts if part is not None)
+
+
 def build_render_keyboard(update_id: int, variant: int) -> str:
     return json.dumps(
         {
@@ -247,6 +280,180 @@ def clean_html_entities(text: str) -> str:
     return cleaned
 
 
+def rough_translate_text(text: str) -> str:
+    translated = clean_html_entities(text or "")
+    replacements = [
+        ("task execution", "выполнению задач"),
+        ("content planning", "планирование контента"),
+        ("small teams", "небольшие команды"),
+        ("real working scenarios", "реальные рабочие сценарии"),
+        ("working scenarios", "рабочие сценарии"),
+        ("repetitive steps", "рутинные шаги"),
+        ("move from chat to", "переходить от чата к"),
+        ("lets teams", "позволяет командам"),
+        ("workflow", "рабочий сценарий"),
+        ("workflows", "рабочие сценарии"),
+        ("creators", "создатели контента"),
+        ("creator", "создатель контента"),
+        ("teams", "команды"),
+        ("team", "команда"),
+        ("faster", "быстрее"),
+        ("slower", "медленнее"),
+        ("update", "обновление"),
+        ("launch", "запуск"),
+        ("released", "выпустила"),
+        ("release", "релиз"),
+        ("new", "новый"),
+        ("tool", "инструмент"),
+        ("tools", "инструменты"),
+        ("content", "контент"),
+        ("image", "изображение"),
+        ("images", "изображения"),
+        ("video", "видео"),
+        ("voice", "озвучка"),
+        ("chat", "чат"),
+    ]
+    for src, dst in replacements:
+        translated = re.sub(rf"(?i)\b{re.escape(src)}\b", dst, translated)
+    translated = re.sub(r"\s+", " ", translated).strip()
+    return translated
+
+
+def fact_is_generic(fact: str) -> bool:
+    lower = (fact or "").lower()
+    generic_markers = [
+        "вышла новая ai-новость",
+        "обновление вокруг claude вызвало большой интерес",
+        "openai показала очередной заметный апдейт",
+        "google выкатила ai-обновление",
+        "появился новый заметный ai-апдейт",
+    ]
+    return any(marker in lower for marker in generic_markers)
+
+
+def fetch_url_text(url: str) -> str:
+    req = request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+        },
+    )
+    with request.urlopen(req, timeout=30) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="ignore")
+
+
+def extract_article_text(html: str) -> str:
+    cleaned = re.sub(r"(?is)<script.*?</script>", " ", html)
+    cleaned = re.sub(r"(?is)<style.*?</style>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<noscript.*?</noscript>", " ", cleaned)
+    paragraphs = re.findall(r"(?is)<p[^>]*>(.*?)</p>", cleaned)
+    chunks: list[str] = []
+    for paragraph in paragraphs:
+        text = re.sub(r"(?is)<[^>]+>", " ", paragraph)
+        text = clean_html_entities(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text.split()) < 8:
+            continue
+        if any(
+            bad in text.lower()
+            for bad in ["subscribe", "sign up", "cookie", "privacy policy", "all rights reserved", "advertisement"]
+        ):
+            continue
+        chunks.append(text)
+        if len(" ".join(chunks)) > 5000:
+            break
+
+    if not chunks:
+        text = re.sub(r"(?is)<[^>]+>", " ", cleaned)
+        text = clean_html_entities(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:5000]
+    return " ".join(chunks)[:5000]
+
+
+def fetch_article_text(link: str) -> str:
+    if not link:
+        return ""
+    try:
+        return extract_article_text(fetch_url_text(link))
+    except Exception:
+        return ""
+
+
+def pick_article_fact(article_text: str, fallback: str) -> str:
+    if not article_text:
+        return fallback
+    sentences = [
+        sentence.strip(" .")
+        for sentence in re.split(r"(?<=[.!?])\s+", article_text)
+        if sentence.strip()
+    ]
+    selected = []
+    for sentence in sentences:
+        lower = sentence.lower()
+        if len(sentence) < 55 or len(sentence) > 240:
+            continue
+        if any(bad in lower for bad in ["cookie", "subscribe", "advertisement", "sign up", "privacy policy"]):
+            continue
+        if not re.search(r"[A-Za-zА-Яа-яЁё]", sentence):
+            continue
+        selected.append(sentence)
+        if len(selected) == 2:
+            break
+
+    if not selected:
+        return fallback
+
+    fact = " ".join(selected)
+    fact = re.sub(r"\s+", " ", fact).strip(" .")
+    return textwrap.shorten(fact, width=220, placeholder="...")
+
+
+def synthesize_fact_from_article(item: dict, article_text: str, fallback_fact: str) -> str:
+    text = clean_html_entities(article_text or "")
+    if not text:
+        return fallback_fact
+
+    lower = text.lower()
+    source_text = clean_html_entities(item.get("text", ""))
+    brand = "инструмент"
+    if "claude" in lower or "anthropic" in lower or "claude" in source_text.lower():
+        brand = "Claude"
+    elif "chatgpt" in lower or "openai" in lower or "openai" in source_text.lower():
+        brand = "ChatGPT"
+    elif "gemini" in lower or "google" in lower or "gemini" in source_text.lower():
+        brand = "Gemini"
+    elif "grok" in lower:
+        brand = "Grok"
+
+    parts = []
+    if any(word in lower for word in ["workflow", "workflows"]):
+        parts.append(f"в {brand} появился новый рабочий сценарий")
+    if any(phrase in lower for phrase in ["task execution", "move from chat to task execution"]):
+        parts.append("который помогает быстрее переходить от чата к выполнению задач")
+    if "repetitive steps" in lower:
+        parts.append("и убирает часть рутинных шагов")
+    if "content planning" in lower:
+        parts.append("в том числе в планировании контента")
+    if any(word in lower for word in ["creators", "creator", "small teams", "teams"]):
+        parts.append("поэтому его сразу примеряют к работе создатели контента и небольшие команды")
+    if any(word in lower for word in ["video generation", "video model", "video generator"]):
+        return "вышел новый AI-видео-инструмент, который обещает ускорить генерацию роликов и сделать качество ближе к коммерческому продакшну"
+    if any(word in lower for word in ["image generation", "image model", "photo editing", "image editing"]):
+        return "вышло обновление, которое усиливает генерацию изображений и делает AI-картинки полезнее для реальной работы"
+    if any(word in lower for word in ["avatar", "voice", "speech"]) and any(word in lower for word in ["creator", "content", "teams"]):
+        return "появился инструмент, который может заметно упростить аватары, озвучку и производство короткого контента"
+
+    if parts:
+        sentence = " ".join(parts)
+        sentence = re.sub(r"\s+", " ", sentence).strip(" .")
+        return sentence[0].upper() + sentence[1:] if sentence else fallback_fact
+
+    return fallback_fact
+
+
 def best_hook_notes() -> dict:
     try:
         creds = get_credentials()
@@ -310,7 +517,7 @@ def adapt_source_to_russian(item: dict) -> tuple[str, str]:
         title_ru = title_ru.replace(src, dst)
         body = body.replace(src, dst)
 
-    return title_ru.strip(), body.strip()
+    return rough_translate_text(title_ru.strip()), rough_translate_text(body.strip())
 
 
 def compress_fact(body_ru: str, title: str = "") -> str:
@@ -352,8 +559,12 @@ def infer_russian_fact(item: dict, fallback_fact: str) -> str:
     link = (item.get("link") or "").lower()
     haystack = f"{text} {link}".lower()
 
+    translated_fallback = rough_translate_text(fallback_fact)
+    if translated_fallback and not fact_is_generic(translated_fallback):
+        return translated_fallback
+
     if not is_mostly_english(text):
-        return fallback_fact
+        return translated_fallback or fallback_fact
 
     if "claude code" in haystack and any(word in haystack for word in ["love", "hate"]):
         return "тысячи людей повторяют популярный сетап Claude Code от Гарри Тана, и AI-сообщество резко спорит, помогает ли он в реальной работе"
@@ -371,7 +582,7 @@ def infer_russian_fact(item: dict, fallback_fact: str) -> str:
         return "OpenAI показала очередной заметный апдейт, который быстро разойдётся по рынку и по креаторскому AI-сегменту"
     if "google" in haystack or "gemini" in haystack:
         return "Google выкатила AI-обновление, которое пытается стать более массовым и понятным обычному пользователю"
-    return "вышла новая AI-новость, которую сейчас активно обсуждают, потому что у неё есть заметный прикладной эффект"
+    return translated_fallback or "вышла новая AI-новость, которую сейчас активно обсуждают, потому что у неё есть заметный прикладной эффект"
 
 
 def build_hashtags(item: dict) -> str:
@@ -481,7 +692,10 @@ def build_script_variants(item: dict) -> list[dict]:
         payload = {}
 
     title_ru, body_ru = adapt_source_to_russian(item)
+    article_text = fetch_article_text(item.get("link", ""))
     fact = compress_fact(body_ru, title_ru)
+    fact = pick_article_fact(article_text, fact)
+    fact = synthesize_fact_from_article(item, article_text, fact)
     fact = infer_russian_fact(item, fact)
     title = build_russian_title(item, fact)
     listener_value = build_listener_value(item, title, fact)
@@ -506,6 +720,63 @@ def build_script_variants(item: dict) -> list[dict]:
                 )
         variant["hashtags"] = build_hashtags(item)
     return variants
+
+
+def send_pool_top_news(chat_id: int, items: dict, limit: int = 3) -> int:
+    pool = load_pool()
+    candidates = pool.get("candidates", [])[:limit]
+    if not candidates:
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": "Сильных новостей в пуле пока нет. Попробуй ещё раз чуть позже.",
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
+        return 0
+
+    safe_telegram_post(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": f"Собрал пул новостей и отобрал 3 лучшие темы из {len(pool.get('candidates', []))}.",
+            "disable_web_page_preview": "true",
+            "reply_markup": build_reply_keyboard(),
+        },
+    )
+
+    item_id = next_item_id(items)
+    sent = 0
+    for entry in candidates:
+        current_id = item_id
+        item_id += 1
+        text = f"{entry['title']}\n\n{entry.get('summary', '')}\n\nИсточник: {entry['link']}"
+        items[str(current_id)] = {
+            "update_id": current_id,
+            "timestamp": entry.get("published_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")),
+            "from": "news_scout",
+            "username": "railway_worker",
+            "text": text,
+            "link": entry["link"],
+            "forwarded_from": entry.get("source", ""),
+            "status": "inbox",
+            "source": entry.get("source", ""),
+            "score": entry.get("score", 0),
+            "pool_id": entry.get("pool_id", ""),
+        }
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": build_scout_card(entry),
+                "disable_web_page_preview": "false",
+                "reply_markup": build_keyboard(current_id),
+            },
+        )
+        sent += 1
+    return sent
 
 
 def create_did_talk(script_text: str) -> dict:
@@ -841,7 +1112,7 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
     return action in {"script", "render", "publish"}
 
 
-def handle_text_command(text: str, expected_chat_id: int) -> bool:
+def handle_text_command(text: str, expected_chat_id: int, items: dict) -> bool:
     normalized = text.strip().lower()
     if normalized == "статистика":
         creds = get_credentials()
@@ -869,18 +1140,18 @@ def handle_text_command(text: str, expected_chat_id: int) -> bool:
             timeout=180,
             check=False,
         )
-        message = "Запустил news scout."
         if result.returncode != 0:
-            message = "Не смог запустить news scout."
-        safe_telegram_post(
-            "sendMessage",
-            {
-                "chat_id": expected_chat_id,
-                "text": message,
-                "disable_web_page_preview": "true",
-                "reply_markup": build_reply_keyboard(),
-            },
-        )
+            safe_telegram_post(
+                "sendMessage",
+                {
+                    "chat_id": expected_chat_id,
+                    "text": "Не смог обновить пул новостей.",
+                    "disable_web_page_preview": "true",
+                    "reply_markup": build_reply_keyboard(),
+                },
+            )
+            return True
+        send_pool_top_news(expected_chat_id, items, limit=3)
         return True
 
     return False
@@ -922,7 +1193,7 @@ def main() -> int:
         if not text or text.startswith("/"):
             continue
 
-        if handle_text_command(text, expected_chat_id):
+        if handle_text_command(text, expected_chat_id, items):
             processed += 1
             continue
 

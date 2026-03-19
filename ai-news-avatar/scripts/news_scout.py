@@ -18,6 +18,7 @@ ENV_PATH = PROJECT_ROOT / ".env"
 ITEMS_PATH = ROOT / "inbox" / "news_items.json"
 INBOX_PATH = ROOT / "inbox" / "news_inbox.md"
 SCOUT_STATE_PATH = ROOT / "inbox" / "news_scout_state.json"
+POOL_PATH = ROOT / "inbox" / "news_pool.json"
 
 CORE_BRANDS = [
     "openai",
@@ -129,44 +130,6 @@ def load_json(path: Path, default):
 def save_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def telegram_post(method: str, payload: dict) -> dict:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    body = parse.urlencode(payload).encode("utf-8")
-    req = request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    with request.urlopen(req, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def build_keyboard(item_id: int) -> str:
-    return json.dumps(
-        {
-            "inline_keyboard": [
-                [
-                    {"text": "3 сценария", "callback_data": f"script:{item_id}"},
-                ],
-            ]
-        },
-        ensure_ascii=False,
-    )
-
-
-def build_reply_keyboard() -> str:
-    return json.dumps(
-        {
-            "keyboard": [[{"text": "Статистика"}, {"text": "Скаут"}]],
-            "resize_keyboard": True,
-            "persistent_keyboard": True,
-        },
-        ensure_ascii=False,
-    )
 
 
 def fetch_feed(url: str) -> bytes:
@@ -302,7 +265,7 @@ def is_fresh(entry: dict) -> bool:
     return entry["published_at"] >= datetime.now(timezone.utc) - timedelta(days=3)
 
 
-def shortlist(entries: list[dict], existing_links: set[str], limit: int = 3) -> list[dict]:
+def shortlist(entries: list[dict], existing_links: set[str], limit: int = 15) -> list[dict]:
     deduped = []
     seen = set(existing_links)
     for entry in entries:
@@ -319,8 +282,7 @@ def shortlist(entries: list[dict], existing_links: set[str], limit: int = 3) -> 
         seen.add(link)
 
     deduped.sort(key=lambda item: (item["score"], item["published_at"]), reverse=True)
-    internal_pool = deduped[:15]
-    return internal_pool[:limit]
+    return deduped[:limit]
 
 
 def append_inbox_entry(item_id: int, entry: dict) -> None:
@@ -341,50 +303,11 @@ def append_inbox_entry(item_id: int, entry: dict) -> None:
         handle.write(block)
 
 
-def send_shortlist_item(item_id: int, entry: dict) -> None:
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-    text = (
-        f"Найдена охватная AI-новость\n\n"
-        f"{entry['title']}\n\n"
-        f"Источник: {entry['source']}\n"
-        f"Скоринг: {entry['score']}\n"
-        f"{entry['link']}"
-    )
-    telegram_post(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": "false",
-            "reply_markup": build_keyboard(item_id),
-        },
-    )
-
-
-def send_no_news_message() -> None:
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-    telegram_post(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": "News scout: сильных новых AI-новостей в этот прогон не нашёл.",
-            "disable_web_page_preview": "true",
-            "reply_markup": build_reply_keyboard(),
-        },
-    )
-
-
-def next_item_id(items: dict) -> int:
-    numeric_ids = [int(key) for key in items.keys() if str(key).isdigit()]
-    base = int(time.time())
-    return max(numeric_ids + [base]) + 1
-
-
 def main() -> int:
     load_env(ENV_PATH)
-    items = load_json(ITEMS_PATH, {})
     state = load_json(SCOUT_STATE_PATH, {"seen_links": []})
-    existing_links = {item.get("link", "") for item in items.values() if item.get("link")}
+    pool = load_json(POOL_PATH, {"candidates": []})
+    existing_links = {item.get("link", "") for item in pool.get("candidates", []) if item.get("link")}
     existing_links.update(state.get("seen_links", []))
 
     all_entries: list[dict] = []
@@ -395,33 +318,42 @@ def main() -> int:
         except Exception as exc:
             print(json.dumps({"source": source_name, "url": url, "error": str(exc)}, ensure_ascii=False))
 
-    picks = shortlist(all_entries, existing_links, limit=3)
+    picks = shortlist(all_entries, existing_links, limit=15)
     if not picks:
-        send_no_news_message()
+        save_json(
+            POOL_PATH,
+            {
+                "refreshed_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                "candidates": [],
+            },
+        )
+        print(json.dumps({"picked": 0}, ensure_ascii=False))
         return 0
 
-    item_id = next_item_id(items)
-    for entry in picks:
-        current_id = item_id
-        item_id += 1
-        text = f"{entry['title']}\n\n{entry['summary']}\n\nИсточник: {entry['link']}"
-        items[str(current_id)] = {
-            "update_id": current_id,
-            "timestamp": entry["published_at"].strftime("%Y-%m-%d %H:%M UTC"),
-            "from": "news_scout",
-            "username": "railway_worker",
-            "text": text,
-            "link": entry["link"],
-            "forwarded_from": entry["source"],
-            "status": "inbox",
-            "source": entry["source"],
-            "score": entry["score"],
-        }
-        append_inbox_entry(current_id, entry)
+    candidates = []
+    for idx, entry in enumerate(picks, start=1):
+        entry_id = f"pool-{int(time.time())}-{idx}"
+        candidates.append(
+            {
+                "pool_id": entry_id,
+                "source": entry["source"],
+                "title": entry["title"],
+                "summary": entry["summary"],
+                "link": entry["link"],
+                "score": entry["score"],
+                "published_at": entry["published_at"].strftime("%Y-%m-%d %H:%M UTC"),
+            }
+        )
         state.setdefault("seen_links", []).append(entry["link"])
-        save_json(ITEMS_PATH, items)
-        save_json(SCOUT_STATE_PATH, state)
-        send_shortlist_item(current_id, entry)
+
+    save_json(
+        POOL_PATH,
+        {
+            "refreshed_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "candidates": candidates,
+        },
+    )
+    save_json(SCOUT_STATE_PATH, state)
 
     print(json.dumps({"picked": len(picks)}, ensure_ascii=False))
     return 0
