@@ -19,32 +19,67 @@ ITEMS_PATH = ROOT / "inbox" / "news_items.json"
 INBOX_PATH = ROOT / "inbox" / "news_inbox.md"
 SCOUT_STATE_PATH = ROOT / "inbox" / "news_scout_state.json"
 
-AI_KEYWORDS = [
-    "ai",
-    "model",
-    "models",
-    "llm",
-    "multimodal",
-    "embedding",
-    "embeddings",
-    "inference",
-    "agent",
-    "agents",
-    "api",
-    "developer",
-    "launch",
-    "release",
-    "released",
-    "announced",
-    "anthropic",
+CORE_BRANDS = [
     "openai",
-    "gemini",
+    "anthropic",
+    "google",
     "deepmind",
     "xai",
+    "meta",
     "mistral",
     "hugging face",
-    "video generation",
+    "runway",
+    "midjourney",
+]
+
+VIRAL_KEYWORDS = [
+    "new model",
+    "new models",
+    "launch",
+    "released",
+    "announced",
+    "rollout",
+    "video",
+    "image",
+    "images",
+    "generator",
+    "avatar",
+    "voice",
     "reasoning",
+    "agent",
+    "agents",
+    "grok",
+    "gemini",
+    "chatgpt",
+    "sora",
+    "veo",
+    "seedance",
+    "runway",
+    "image generation",
+    "video generation",
+    "multimodal",
+    "real-time",
+    "creative",
+    "consumer",
+    "app",
+    "search",
+]
+
+DEPRIORITIZED_KEYWORDS = [
+    "embedding",
+    "embeddings",
+    "inference stack",
+    "benchmark",
+    "eval",
+    "sdk",
+    "python sdk",
+    "enterprise",
+    "observability",
+    "infrastructure",
+    "backend",
+    "security patch",
+    "compliance",
+    "documentation",
 ]
 
 FEEDS = [
@@ -201,13 +236,33 @@ def parse_entries(xml_bytes: bytes, source_name: str) -> list[dict]:
 def score_entry(entry: dict) -> int:
     haystack = f"{entry['title']} {entry['summary']}".lower()
     score = 0
-    for keyword in AI_KEYWORDS:
+
+    for brand in CORE_BRANDS:
+        if brand in haystack:
+            score += 2
+
+    for keyword in VIRAL_KEYWORDS:
         if keyword in haystack:
-            score += 1
-    if any(name in haystack for name in ["openai", "anthropic", "google", "deepmind", "xai", "mistral", "hugging face"]):
+            score += 2
+
+    if any(word in haystack for word in ["model", "models", "launch", "released", "announced"]):
+        score += 3
+
+    if any(word in haystack for word in ["video", "image", "avatar", "voice", "generator"]):
+        score += 4
+
+    if any(word in haystack for word in ["faster", "better", "cheaper", "real-time", "viral", "popular"]):
         score += 2
-    if any(name in haystack for name in ["api", "model", "embedding", "inference", "multimodal", "video"]):
-        score += 2
+
+    for keyword in DEPRIORITIZED_KEYWORDS:
+        if keyword in haystack:
+            score -= 3
+
+    if any(word in haystack for word in ["embedding", "embeddings"]) and not any(
+        word in haystack for word in ["video", "image", "consumer", "search", "chatgpt", "gemini", "grok"]
+    ):
+        score -= 4
+
     return score
 
 
@@ -256,9 +311,10 @@ def append_inbox_entry(item_id: int, entry: dict) -> None:
 def send_shortlist_item(item_id: int, entry: dict) -> None:
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
     text = (
-        f"Найдена новость\n\n"
+        f"Найдена охватная AI-новость\n\n"
         f"{entry['title']}\n\n"
         f"Источник: {entry['source']}\n"
+        f"Скоринг: {entry['score']}\n"
         f"{entry['link']}"
     )
     telegram_post(

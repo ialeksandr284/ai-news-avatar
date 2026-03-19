@@ -15,6 +15,8 @@ The output should feel like a real AI news host, not a cheap AI template.
 - make the practical impact obvious
 - avoid generic titles like `что нового в AI` too often
 - rotate title patterns to avoid template fatigue
+- prefer stories with broad audience appeal: new models, visual AI, video AI, voice AI, surprising product launches
+- deprioritize dry infra/dev-only stories unless they have obvious mass-market impact
 
 ## Visual Rules
 - clean, credible, newsroom-style presentation

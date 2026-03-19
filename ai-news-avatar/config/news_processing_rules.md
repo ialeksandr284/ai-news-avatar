@@ -2,6 +2,7 @@
 
 ## Goal
 Telegram news leads are only inputs, not final source material.
+The scouting layer should prefer high-reach AI stories, not niche infra updates.
 
 ## Required Pipeline
 1. Receive inbound post
@@ -26,3 +27,16 @@ Telegram news leads are only inputs, not final source material.
 - `accept` if the story is real and strong
 - `needs_more_research` if signal exists but confirmation is weak
 - `reject` if the story is hype, thin, duplicate, or unusable for Shorts
+
+## Scout Priorities
+- new flagship models
+- image and video generation launches
+- consumer-facing AI features
+- major product updates from OpenAI, Google, Anthropic, xAI, Meta, Runway, Midjourney
+- stories that can be explained in one punchy sentence
+
+## Scout Depriorities
+- embeddings-only updates without broad user impact
+- SDK or backend changes without clear audience value
+- enterprise or compliance news
+- niche infra posts that do not have a strong Shorts hook
