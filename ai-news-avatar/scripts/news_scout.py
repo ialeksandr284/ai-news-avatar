@@ -88,6 +88,8 @@ FEEDS = [
     ("Google Blog AI", "https://blog.google/technology/ai/rss/"),
     ("TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/"),
     ("The Verge AI", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
+    ("The Verge AI Creators", "https://www.theverge.com/rss/creators/index.xml"),
+    ("TechCrunch Media & Entertainment", "https://techcrunch.com/category/media-entertainment/feed/"),
     ("Hugging Face", "https://huggingface.co/blog/feed.xml"),
     ("Mistral", "https://mistral.ai/news/rss.xml"),
 ]

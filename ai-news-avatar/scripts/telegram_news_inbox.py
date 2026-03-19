@@ -6,10 +6,11 @@ import json
 import os
 import re
 import subprocess
+import time
 import textwrap
 from datetime import datetime
 from pathlib import Path
-from urllib import parse, request
+from urllib import error, parse, request
 
 from telegram_daily_report import format_report, get_credentials, get_recent_videos
 from googleapiclient.discovery import build
@@ -22,6 +23,8 @@ INBOX_PATH = ROOT / "inbox" / "news_inbox.md"
 STATE_PATH = ROOT / "inbox" / "telegram_state.json"
 ITEMS_PATH = ROOT / "inbox" / "news_items.json"
 GROK_DRAFT_SCRIPT = ROOT / "scripts" / "grok_draft_engine.py"
+BUFFER_CHANNEL_ID = os.environ.get("BUFFER_CHANNEL_ID", "69ba7fe47be9f8b1716ad1c3")
+SCRIPT_MAX_CHARS = 330
 
 
 def load_env(env_path: Path) -> None:
@@ -169,6 +172,13 @@ def short_title(text: str) -> str:
     return first_line[:90] if first_line else "Новая новость"
 
 
+def sanitize_for_script(text: str) -> str:
+    cleaned = re.sub(r"https?://\S+", "", text or "")
+    cleaned = re.sub(r"@\w+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
 def best_hook_notes() -> dict:
     try:
         creds = get_credentials()
@@ -198,9 +208,11 @@ def best_hook_notes() -> dict:
 
 
 def adapt_source_to_russian(item: dict) -> tuple[str, str]:
-    title = short_title(item.get("text", ""))
-    body = " ".join(line.strip() for line in item.get("text", "").splitlines()[1:] if line.strip())
-    body = body or item.get("text", "").strip()
+    title = short_title(sanitize_for_script(item.get("text", "")))
+    body = " ".join(
+        line.strip() for line in sanitize_for_script(item.get("text", "")).splitlines()[1:] if line.strip()
+    )
+    body = body or sanitize_for_script(item.get("text", "")).strip()
 
     title_ru = title
     replacements = {
@@ -229,6 +241,53 @@ def adapt_source_to_russian(item: dict) -> tuple[str, str]:
     return title_ru.strip(), body.strip()
 
 
+def compress_fact(body_ru: str, title: str = "") -> str:
+    fact = re.sub(r"\s+", " ", body_ru).strip(" .")
+    fact = re.sub(r"^(Источник:.*)$", "", fact, flags=re.IGNORECASE).strip(" .")
+    if title:
+        title_norm = re.escape(title.strip())
+        fact = re.sub(rf"^{title_norm}[\s\.\:\-–—]*", "", fact, flags=re.IGNORECASE).strip(" .")
+    return textwrap.shorten(fact, width=135, placeholder="...")
+
+
+def build_hype_variants(title: str, fact: str, style_hint: str) -> list[dict]:
+    variants = [
+        {
+            "hook": "Если делаешь AI-контент, вот новость, которая реально может сэкономить тебе часы тестов.",
+            "script": (
+                f"{title}. "
+                f"Суть очень простая: {fact}. "
+                f"Это не новость ради шума, а вполне прикладная штука, которую можно быстро разобрать и унести в работу."
+            ),
+            "angle": "практическая польза",
+        },
+        {
+            "hook": "Похоже, это одна из тех AI-новостей, которые быстро разлетаются далеко за пределы гиковской аудитории.",
+            "script": (
+                f"{title}. "
+                f"Если коротко, то {fact}. "
+                f"Такие истории заходят лучше, когда за одну фразу понятно, что это меняет для видео, картинок или контента."
+            ),
+            "angle": "массовый эффект",
+        },
+        {
+            "hook": "Вот новость, которую быстро растащат все, кто делает AI-видео, изображения и контент.",
+            "script": (
+                f"{title}. "
+                f"По факту это про {fact}. "
+                f"Это тот тип сюжета, где новый инструмент объясняется одной фразой, и выгода чувствуется сразу, без длинных вступлений."
+            ),
+            "angle": "виральный пересказ",
+        },
+    ]
+
+    for variant in variants:
+        variant["script"] = textwrap.shorten(variant["script"], width=SCRIPT_MAX_CHARS, placeholder="...")
+        variant["meta"] = f"Стиль: {style_hint}. Держим коротко, по-человечески и без канцелярита."
+
+    return variants
+
+
 def build_script_variants(item: dict) -> list[dict]:
     text = item.get("text", "").strip()
     if not text:
@@ -251,51 +310,108 @@ def build_script_variants(item: dict) -> list[dict]:
     base_hook = payload.get("hook_ru") or title
     base_script = payload.get("script_ru")
     notes = payload.get("notes_ru", "")
-
-    if not base_script:
-        base_script = (
-            f"{title}. "
-            f"Коротко: {body_ru[:170].rstrip()} "
-            f"Это может быстро разойтись по AI-комьюнити, если фича реально даёт заметный эффект."
-        )
+    using_local_fallback = "локальный fallback" in notes.lower()
 
     stats = best_hook_notes()
     style_hint = stats["hook_style"]
+    fact = compress_fact(body_ru, title)
+    variants = build_hype_variants(title, fact, style_hint)
 
-    variants = [
-        {
-            "hook": base_hook,
-            "script": base_script,
-            "angle": "прямой релиз",
-        },
-        {
-            "hook": f"Похоже, это одна из самых обсуждаемых AI-новостей дня: {title}",
-            "script": (
-                f"{title}. "
-                f"Смысл новости простой: {body_ru[:150].rstrip()}. "
-                f"Если это реально даст заметный результат в картинках, видео или контенте, история может быстро разойтись далеко за пределы гиковской аудитории."
-            ),
-            "angle": "виральный сигнал",
-        },
-        {
-            "hook": f"Вот AI-обновление, которое легко может залететь в охваты: {title}",
-            "script": (
-                f"{title}. "
-                f"По сути, речь про вот что: {body_ru[:145].rstrip()}. "
-                f"Я специально подаю это через угол массового эффекта, потому что у нас лучше заходят истории, где новая штука понятна за одну фразу и сразу чувствуется практический результат."
-            ),
-            "angle": "охватный угол",
-        },
-    ]
-
-    if notes:
-        variants[0]["script"] = f"{variants[0]['script']} Примечание: {notes}"
+    if base_script and not using_local_fallback:
+        variants[0]["hook"] = base_hook
+        variants[0]["script"] = textwrap.shorten(base_script, width=SCRIPT_MAX_CHARS, placeholder="...")
+    if notes and not using_local_fallback:
+        variants[0]["meta"] = f"{variants[0]['meta']} Заметка: {notes}"
 
     for variant in variants:
-        variant["script"] = textwrap.shorten(variant["script"], width=430, placeholder="...")
-        variant["meta"] = f"Стиль: {style_hint}. Лучший прошлый ролик: {stats['top_title']} ({stats['best_views']} views)."
-
+        variant["meta"] = (
+            f"{variant['meta']} Лучший прошлый ролик: {stats['top_title']} ({stats['best_views']} views)."
+        )
     return variants
+
+
+def create_did_talk(script_text: str) -> dict:
+    api_key = os.environ.get("DID_API_KEY")
+    source_url = os.environ.get("DID_SOURCE_IMAGE_URL")
+    if not api_key:
+        raise RuntimeError("Не задан DID_API_KEY")
+    if not source_url:
+        raise RuntimeError("Не задан DID_SOURCE_IMAGE_URL")
+
+    payload = {
+        "source_url": source_url,
+        "script": {
+            "type": "text",
+            "provider": {
+                "type": "microsoft",
+                "voice_id": "ru-RU-SvetlanaNeural",
+            },
+            "input": script_text,
+        },
+        "config": {"stitch": True},
+    }
+    req = request.Request(
+        "https://api.d-id.com/talks",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Basic {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    with request.urlopen(req, timeout=120) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def get_did_talk(talk_id: str) -> dict:
+    api_key = os.environ.get("DID_API_KEY")
+    req = request.Request(
+        f"https://api.d-id.com/talks/{talk_id}",
+        headers={
+            "Authorization": f"Basic {api_key}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    with request.urlopen(req, timeout=120) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def wait_for_did_result(talk_id: str, timeout_seconds: int = 240) -> dict:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        data = get_did_talk(talk_id)
+        status = data.get("status")
+        if status == "done":
+            return data
+        if status in {"error", "rejected", "failed"}:
+            raise RuntimeError(f"D-ID завершился со статусом {status}")
+        time.sleep(8)
+    raise RuntimeError("D-ID рендер не успел завершиться вовремя")
+
+
+def send_preview(chat_id: int, title: str, preview_url: str) -> None:
+    result = safe_telegram_post(
+        "sendVideo",
+        {
+            "chat_id": chat_id,
+            "video": preview_url,
+            "caption": f"Превью готово\n\n{title}",
+            "reply_markup": build_reply_keyboard(),
+        },
+    )
+    if result.get("ok"):
+        return
+    safe_telegram_post(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": f"Превью готово\n\n{title}\n{preview_url}",
+            "disable_web_page_preview": "false",
+            "reply_markup": build_reply_keyboard(),
+        },
+    )
 
 
 def update_item_status(items: dict, update_id: int, status: str) -> None:
@@ -337,10 +453,11 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
             item["chosen_variant"] = variant_idx
             item["chosen_script"] = chosen["script"]
             item["chosen_hook"] = chosen["hook"]
-        text = "Ок, пометил сценарий как готовый к рендеру."
-        if chosen:
+        if not chosen:
+            text = "Сначала выбери один из трёх сценариев."
+        else:
             text = (
-                f"Ок, отправляем в рендер вариант {variant_idx}.\n\n"
+                f"Запускаю рендер варианта {variant_idx}.\n\n"
                 f"Хук: {chosen['hook']}\n\n"
                 f"{chosen['script']}"
             )
@@ -385,6 +502,54 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
                         "reply_markup": build_render_keyboard(update_id, idx),
                     },
                 )
+    elif action == "render":
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
+        chosen_script = item.get("chosen_script")
+        try:
+            if not chosen_script:
+                raise RuntimeError("Сценарий для рендера не найден")
+            talk = create_did_talk(chosen_script)
+            talk_id = talk.get("id", "")
+            item["did_talk_id"] = talk_id
+            if not talk_id:
+                raise RuntimeError("D-ID не вернул id рендера")
+            result = wait_for_did_result(talk_id)
+            preview_url = result.get("result_url", "")
+            item["preview_url"] = preview_url
+            item["did_status"] = result.get("status", "")
+            update_item_status(items, update_id, "preview_ready")
+            if preview_url:
+                send_preview(chat_id, short_title(item.get("text", "")), preview_url)
+            else:
+                safe_telegram_post(
+                    "sendMessage",
+                    {
+                        "chat_id": chat_id,
+                        "text": "Рендер завершился, но D-ID не вернул ссылку на превью.",
+                        "disable_web_page_preview": "true",
+                        "reply_markup": build_reply_keyboard(),
+                    },
+                )
+        except Exception as exc:
+            item["render_error"] = str(exc)
+            update_item_status(items, update_id, "render_failed")
+            safe_telegram_post(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": f"Не смог отрендерить превью: {exc}",
+                    "disable_web_page_preview": "true",
+                    "reply_markup": build_reply_keyboard(),
+                },
+            )
     else:
         safe_telegram_post(
             "sendMessage",
