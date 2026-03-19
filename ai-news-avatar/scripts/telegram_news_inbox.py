@@ -129,6 +129,41 @@ def append_inbox_entry(message: dict, update_id: int) -> dict:
     }
 
 
+def item_from_scout_card(message_text: str, update_id: int) -> dict | None:
+    text = clean_html_entities(message_text or "").strip()
+    if not text.startswith("Найдена охватная AI-новость"):
+        return None
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 4:
+        return None
+
+    title = lines[1]
+    source = ""
+    link = ""
+    for line in lines[2:]:
+        if line.lower().startswith("источник:"):
+            source = line.split(":", 1)[1].strip()
+        elif line.startswith("http://") or line.startswith("https://"):
+            link = line.strip()
+
+    if not title:
+        return None
+
+    rebuilt_text = f"{title}\n\nИсточник: {source}\n\n{link}".strip()
+    return {
+        "update_id": update_id,
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "from": "news_scout_card",
+        "username": "railway_worker",
+        "text": rebuilt_text,
+        "link": link,
+        "forwarded_from": source,
+        "source": source,
+        "status": "inbox",
+    }
+
+
 def build_keyboard(update_id: int) -> str:
     return json.dumps(
         {
@@ -583,6 +618,12 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
 
     item = items.get(str(update_id))
     if not item:
+        rebuilt = item_from_scout_card(message.get("text", ""), update_id)
+        if rebuilt:
+            items[str(update_id)] = rebuilt
+            item = rebuilt
+
+    if not item:
         safe_telegram_post(
             "answerCallbackQuery",
             {"callback_query_id": callback_id, "text": "Карточка устарела, нажми Скаут ещё раз"},
@@ -598,6 +639,19 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
             },
         )
         return False
+
+    print(
+        json.dumps(
+            {
+                "callback_action": action,
+                "update_id": update_id,
+                "variant_idx": variant_idx,
+                "item_found": True,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
 
     if action == "script":
         variants = build_script_variants(item)
