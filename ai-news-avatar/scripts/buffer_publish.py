@@ -27,7 +27,7 @@ def load_env(env_path: Path) -> None:
 def build_reply_keyboard() -> str:
     return json.dumps(
         {
-            "keyboard": [[{"text": "Статистика"}]],
+            "keyboard": [[{"text": "Статистика"}, {"text": "Скаут"}]],
             "resize_keyboard": True,
             "persistent_keyboard": True,
         },

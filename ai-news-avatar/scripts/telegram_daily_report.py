@@ -123,7 +123,7 @@ def build_reply_keyboard() -> str:
     return json.dumps(
         {
             "keyboard": [
-                [{"text": "Статистика"}],
+                [{"text": "Статистика"}, {"text": "Скаут"}],
             ],
             "resize_keyboard": True,
             "persistent_keyboard": True,

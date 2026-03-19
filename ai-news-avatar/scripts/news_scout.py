@@ -161,7 +161,7 @@ def build_keyboard(item_id: int) -> str:
 def build_reply_keyboard() -> str:
     return json.dumps(
         {
-            "keyboard": [[{"text": "Статистика"}]],
+            "keyboard": [[{"text": "Статистика"}, {"text": "Скаут"}]],
             "resize_keyboard": True,
             "persistent_keyboard": True,
         },
