@@ -1,0 +1,48 @@
+{
+  "run_date": "",
+  "run_type": "manual",
+  "status": "draft",
+  "candidate_stories": [
+    {
+      "headline": "",
+      "source": "",
+      "url": "",
+      "why_relevant": ""
+    }
+  ],
+  "selected_story": {
+    "headline": "",
+    "source": "",
+    "url": "",
+    "publish_date": ""
+  },
+  "brief_ru": {
+    "what_happened": "",
+    "who_released_it": "",
+    "what_is_new": "",
+    "why_it_matters": "",
+    "caveats": ""
+  },
+  "script": {
+    "hook": "",
+    "script_ru": "",
+    "estimated_duration_sec": 30
+  },
+  "metadata": {
+    "title_ru": "",
+    "description_ru": "",
+    "hashtags": [],
+    "thumbnail_concept": ""
+  },
+  "avatar_output": {
+    "voice_provider": "",
+    "avatar_provider": "",
+    "preview_link": "",
+    "file_path": ""
+  },
+  "review": {
+    "approved": false,
+    "revisions_needed": "",
+    "final_status": "draft"
+  }
+}

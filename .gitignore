@@ -1,0 +1,7 @@
+.env
+outputs/
+node_modules/
+.DS_Store
+*.zip
+ai-news-avatar/client_secret.json
+ai-news-avatar/youtube_token.json
