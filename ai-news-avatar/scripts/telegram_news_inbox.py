@@ -438,7 +438,20 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
 
     item = items.get(str(update_id))
     if not item:
-        safe_telegram_post("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Новость не найдена"})
+        safe_telegram_post(
+            "answerCallbackQuery",
+            {"callback_query_id": callback_id, "text": "Карточка устарела, нажми Скаут ещё раз"},
+        )
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": "Эта карточка уже устарела или ещё не успела сохраниться. Нажми `Скаут` и используй свежую карточку.",
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
         return False
 
     if action == "script":

@@ -392,11 +392,11 @@ def main() -> int:
             "score": entry["score"],
         }
         append_inbox_entry(current_id, entry)
-        send_shortlist_item(current_id, entry)
         state.setdefault("seen_links", []).append(entry["link"])
+        save_json(ITEMS_PATH, items)
+        save_json(SCOUT_STATE_PATH, state)
+        send_shortlist_item(current_id, entry)
 
-    save_json(ITEMS_PATH, items)
-    save_json(SCOUT_STATE_PATH, state)
     print(json.dumps({"picked": len(picks)}, ensure_ascii=False))
     return 0
 
