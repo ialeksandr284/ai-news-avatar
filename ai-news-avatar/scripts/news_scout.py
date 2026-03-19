@@ -277,6 +277,34 @@ def shortlist(entries: list[dict], existing_links: set[str], limit: int = 15) ->
         score = score_entry(entry)
         if score < 2:
             continue
+        haystack = f"{entry['title']} {entry['summary']}".lower()
+        if not any(
+            word in haystack
+            for word in [
+                "video",
+                "image",
+                "images",
+                "generator",
+                "avatar",
+                "voice",
+                "chatgpt",
+                "gpt",
+                "gemini",
+                "grok",
+                "claude",
+                "midjourney",
+                "runway",
+                "veo",
+                "sora",
+                "seedance",
+                "creator",
+                "creators",
+                "content",
+                "photo",
+                "photos",
+            ]
+        ):
+            continue
         entry["score"] = score
         deduped.append(entry)
         seen.add(link)

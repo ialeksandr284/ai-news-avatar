@@ -551,7 +551,10 @@ def build_russian_title(item: dict, fact: str) -> str:
         return "Google выкатила новый AI-апдейт"
     if "anthropic" in source or "claude" in haystack:
         return "Anthropic выкатила заметное обновление Claude"
-    return "Появилась новая заметная AI-новость"
+    title_text = short_title(text).strip()
+    if title_text and not is_mostly_english(title_text) and len(title_text) > 12:
+        return title_text[:90]
+    return "Вышла новая AI-функция, которую уже начали примерять к реальной работе"
 
 
 def infer_russian_fact(item: dict, fallback_fact: str) -> str:
@@ -712,6 +715,11 @@ def build_script_variants(item: dict) -> list[dict]:
         )
 
     for variant in variants:
+        if title == "Вышла новая AI-функция, которую уже начали примерять к реальной работе":
+            variant["script"] = variant["script"].replace(
+                title,
+                "Вышло новое AI-обновление, которое уже пытаются быстро адаптировать под реальные рабочие сценарии",
+            )
         if stats["top_title"] and stats["best_views"]:
             if "релиза" in stats["hook_style"] or "релиз" in stats["hook_style"]:
                 variant["script"] = variant["script"].replace(
