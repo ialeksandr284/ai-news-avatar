@@ -80,6 +80,12 @@ DEPRIORITIZED_KEYWORDS = [
     "security patch",
     "compliance",
     "documentation",
+    "medical records",
+    "health coach",
+    "love and hate",
+    "love, and hate",
+    "opinion",
+    "workflow setup",
 ]
 
 FEEDS = [
@@ -249,6 +255,9 @@ def score_entry(entry: dict) -> int:
     if any(word in haystack for word in ["video", "image", "avatar", "voice", "generator"]):
         score += 4
 
+    if any(word in haystack for word in ["shorts", "tiktok", "creator", "creators", "photoshop", "editing"]):
+        score += 3
+
     if any(word in haystack for word in ["chatgpt", "grok", "midjourney", "runway", "veo", "sora", "seedance"]):
         score += 4
 
@@ -261,6 +270,14 @@ def score_entry(entry: dict) -> int:
     for keyword in DEPRIORITIZED_KEYWORDS:
         if keyword in haystack:
             score -= 3
+
+    if any(word in haystack for word in ["medical", "doctor", "records", "health"]):
+        score -= 5
+
+    if any(word in haystack for word in ["why ", "opinion", "love", "hate"]) and not any(
+        word in haystack for word in ["video", "image", "generator", "model", "release"]
+    ):
+        score -= 4
 
     if any(word in haystack for word in ["embedding", "embeddings"]) and not any(
         word in haystack for word in ["video", "image", "consumer", "search", "chatgpt", "gemini", "grok"]

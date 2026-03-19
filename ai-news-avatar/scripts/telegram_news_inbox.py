@@ -179,6 +179,25 @@ def sanitize_for_script(text: str) -> str:
     return cleaned.strip()
 
 
+def is_mostly_english(text: str) -> bool:
+    latin = len(re.findall(r"[A-Za-z]", text or ""))
+    cyrillic = len(re.findall(r"[А-Яа-яЁё]", text or ""))
+    return latin > cyrillic * 2 and latin > 20
+
+
+def clean_html_entities(text: str) -> str:
+    replacements = {
+        "&#8217;": "'",
+        "&amp;": "&",
+        "&quot;": '"',
+        "&#8230;": "...",
+    }
+    cleaned = text or ""
+    for src, dst in replacements.items():
+        cleaned = cleaned.replace(src, dst)
+    return cleaned
+
+
 def best_hook_notes() -> dict:
     try:
         creds = get_credentials()
@@ -208,11 +227,13 @@ def best_hook_notes() -> dict:
 
 
 def adapt_source_to_russian(item: dict) -> tuple[str, str]:
-    title = short_title(sanitize_for_script(item.get("text", "")))
+    title = short_title(sanitize_for_script(clean_html_entities(item.get("text", ""))))
     body = " ".join(
-        line.strip() for line in sanitize_for_script(item.get("text", "")).splitlines()[1:] if line.strip()
+        line.strip()
+        for line in sanitize_for_script(clean_html_entities(item.get("text", ""))).splitlines()[1:]
+        if line.strip()
     )
-    body = body or sanitize_for_script(item.get("text", "")).strip()
+    body = body or sanitize_for_script(clean_html_entities(item.get("text", ""))).strip()
 
     title_ru = title
     replacements = {
@@ -250,41 +271,111 @@ def compress_fact(body_ru: str, title: str = "") -> str:
     return textwrap.shorten(fact, width=135, placeholder="...")
 
 
-def build_hype_variants(title: str, fact: str, style_hint: str) -> list[dict]:
+def build_russian_title(item: dict, fact: str) -> str:
+    source = (item.get("source") or item.get("forwarded_from") or "").lower()
+    text = clean_html_entities(item.get("text", ""))
+    title = short_title(text)
+    haystack = f"{title} {fact}".lower()
+
+    if "gpt-5.4" in haystack:
+        return "OpenAI показала GPT-5.4 mini и nano"
+    if "gemini" in haystack and "personal" in haystack:
+        return "Google расширяет персональный Gemini"
+    if "claude code" in haystack and any(word in haystack for word in ["love", "hate", "hate.", "hate "]):
+        return "Сетап Claude Code неожиданно разделил AI-сообщество"
+    if "seedance" in haystack:
+        return "Для Seedance собрали большую библиотеку промптов"
+    if any(word in haystack for word in ["video", "image", "avatar", "generator", "render"]):
+        return "В AI-контенте появилась новая заметная фишка"
+    if "openai" in source or "openai" in haystack:
+        return "OpenAI выкатила новый заметный апдейт"
+    if "google" in source or "gemini" in haystack:
+        return "Google выкатила новый AI-апдейт"
+    if "anthropic" in source or "claude" in haystack:
+        return "Anthropic выкатила заметное обновление Claude"
+    return "Появилась новая заметная AI-новость"
+
+
+def infer_russian_fact(item: dict, fallback_fact: str) -> str:
+    text = clean_html_entities(item.get("text", ""))
+    link = (item.get("link") or "").lower()
+    haystack = f"{text} {link}".lower()
+
+    if not is_mostly_english(text):
+        return fallback_fact
+
+    if "claude code" in haystack and any(word in haystack for word in ["love", "hate"]):
+        return "тысячи людей повторяют популярный сетап Claude Code от Гарри Тана, и AI-сообщество резко спорит, помогает ли он в реальной работе"
+    if "gpt-5.4" in haystack and "mini" in haystack and "nano" in haystack:
+        return "OpenAI показала облегчённые версии GPT-5.4, чтобы модель можно было запускать дешевле и шире в реальных продуктах"
+    if "gemini" in haystack and "personal" in haystack:
+        return "Google расширяет персонализированный Gemini и делает его заметно ближе к массовому пользователю"
+    if "seedance" in haystack and any(word in haystack for word in ["prompt", "library", "github"]):
+        return "для Seedance уже собрали большую библиотеку готовых промптов и удачных примеров, чтобы не писать всё с нуля"
+    if any(word in haystack for word in ["video", "image", "generator", "render", "avatar"]):
+        return "появился новый заметный AI-апдейт, который может повлиять на создание видео, изображений или другого контента"
+    if "claude" in haystack:
+        return "обновление вокруг Claude вызвало большой интерес, потому что его сразу примеряют к реальным рабочим сценариям"
+    if "openai" in haystack:
+        return "OpenAI показала очередной заметный апдейт, который быстро разойдётся по рынку и по креаторскому AI-сегменту"
+    if "google" in haystack or "gemini" in haystack:
+        return "Google выкатила AI-обновление, которое пытается стать более массовым и понятным обычному пользователю"
+    return "вышла новая AI-новость, которую сейчас активно обсуждают, потому что у неё есть заметный прикладной эффект"
+
+
+def build_hashtags(item: dict) -> str:
+    base = ["#ai", "#shorts"]
+    haystack = clean_html_entities(item.get("text", "")).lower()
+    if "video" in haystack or "seedance" in haystack or "runway" in haystack:
+        base.append("#aivideo")
+    elif "image" in haystack or "midjourney" in haystack:
+        base.append("#aiimages")
+    elif "gpt" in haystack or "chatgpt" in haystack:
+        base.append("#chatgpt")
+    elif "gemini" in haystack:
+        base.append("#gemini")
+    elif "claude" in haystack:
+        base.append("#claude")
+    else:
+        base.append("#ainews")
+    return " ".join(base[:4])
+
+
+def build_video_copy_variants(title: str, fact: str) -> list[dict]:
     variants = [
         {
-            "hook": "Если делаешь AI-контент, вот новость, которая реально может сэкономить тебе часы тестов.",
+            "video_title": title,
             "script": (
+                f"Если ты следишь за AI-инструментами для контента, вот коротко что произошло. "
                 f"{title}. "
-                f"Суть очень простая: {fact}. "
-                f"Это не новость ради шума, а вполне прикладная штука, которую можно быстро разобрать и унести в работу."
+                f"По сути, {fact}. "
+                f"И это как раз тот случай, когда новость можно быстро перевести в практику, а не просто обсудить и забыть."
             ),
-            "angle": "практическая польза",
+            "angle": "практическая подача",
         },
         {
-            "hook": "Похоже, это одна из тех AI-новостей, которые быстро разлетаются далеко за пределы гиковской аудитории.",
+            "video_title": title,
             "script": (
+                f"Похоже, это одна из тех AI-новостей, которые быстро расходятся не только у гиков. "
                 f"{title}. "
-                f"Если коротко, то {fact}. "
-                f"Такие истории заходят лучше, когда за одну фразу понятно, что это меняет для видео, картинок или контента."
+                f"Если совсем коротко, {fact}. "
+                f"История цепляет потому, что эффект понятен почти сразу, особенно если ты делаешь видео, картинки или любой контент."
             ),
-            "angle": "массовый эффект",
+            "angle": "охватный заход",
         },
         {
-            "hook": "Вот новость, которую быстро растащат все, кто делает AI-видео, изображения и контент.",
+            "video_title": title,
             "script": (
+                f"Вот новость, которую сегодня точно будут пересказывать все, кто работает с AI-контентом. "
                 f"{title}. "
-                f"По факту это про {fact}. "
-                f"Это тот тип сюжета, где новый инструмент объясняется одной фразой, и выгода чувствуется сразу, без длинных вступлений."
+                f"Смысл новости такой: {fact}. "
+                f"Именно такие сюжеты обычно набирают лучше, потому что за 20 секунд уже понятно, зачем человеку вообще это знать."
             ),
             "angle": "виральный пересказ",
         },
     ]
-
     for variant in variants:
         variant["script"] = textwrap.shorten(variant["script"], width=SCRIPT_MAX_CHARS, placeholder="...")
-        variant["meta"] = f"Стиль: {style_hint}. Держим коротко, по-человечески и без канцелярита."
-
     return variants
 
 
@@ -306,27 +397,27 @@ def build_script_variants(item: dict) -> list[dict]:
         payload = {}
 
     title_ru, body_ru = adapt_source_to_russian(item)
-    title = payload.get("story_title") or title_ru or short_title(text)
-    base_hook = payload.get("hook_ru") or title
+    fact = compress_fact(body_ru, title_ru)
+    fact = infer_russian_fact(item, fact)
+    title = build_russian_title(item, fact)
     base_script = payload.get("script_ru")
     notes = payload.get("notes_ru", "")
     using_local_fallback = "локальный fallback" in notes.lower()
 
     stats = best_hook_notes()
-    style_hint = stats["hook_style"]
-    fact = compress_fact(body_ru, title)
-    variants = build_hype_variants(title, fact, style_hint)
+    variants = build_video_copy_variants(title, fact)
 
     if base_script and not using_local_fallback:
-        variants[0]["hook"] = base_hook
         variants[0]["script"] = textwrap.shorten(base_script, width=SCRIPT_MAX_CHARS, placeholder="...")
-    if notes and not using_local_fallback:
-        variants[0]["meta"] = f"{variants[0]['meta']} Заметка: {notes}"
 
     for variant in variants:
-        variant["meta"] = (
-            f"{variant['meta']} Лучший прошлый ролик: {stats['top_title']} ({stats['best_views']} views)."
-        )
+        if stats["top_title"] and stats["best_views"]:
+            if "релиза" in stats["hook_style"] or "релиз" in stats["hook_style"]:
+                variant["script"] = variant["script"].replace(
+                    "Именно такие сюжеты обычно набирают лучше, потому что за 20 секунд уже понятно, зачем человеку вообще это знать.",
+                    "Такие сюжеты заходят лучше, когда с первых секунд чувствуешь, что это реальный новый релиз или заметный апдейт.",
+                )
+        variant["hashtags"] = build_hashtags(item)
     return variants
 
 
@@ -507,9 +598,9 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
                         "chat_id": chat_id,
                         "text": (
                             f"Вариант {idx}\n\n"
-                            f"Хук: {variant['hook']}\n\n"
-                            f"{variant['script']}\n\n"
-                            f"{variant['meta']}"
+                            f"Заголовок: {variant['video_title']}\n\n"
+                            f"Текст:\n{variant['script']}\n\n"
+                            f"Хештеги: {variant['hashtags']}"
                         ),
                         "disable_web_page_preview": "true",
                         "reply_markup": build_render_keyboard(update_id, idx),
