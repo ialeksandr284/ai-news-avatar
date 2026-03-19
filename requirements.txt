@@ -1,1 +1,2 @@
--r ai-news-avatar/requirements-youtube.txt
+google-api-python-client==2.168.0
+google-auth-oauthlib==1.2.2
