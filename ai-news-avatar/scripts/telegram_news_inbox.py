@@ -276,13 +276,15 @@ def best_hook_notes() -> dict:
 
 
 def adapt_source_to_russian(item: dict) -> tuple[str, str]:
-    title = short_title(sanitize_for_script(clean_html_entities(item.get("text", ""))))
+    raw = sanitize_for_script(clean_html_entities(item.get("text", "")))
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    title = lines[0] if lines else short_title(raw)
     body = " ".join(
-        line.strip()
-        for line in sanitize_for_script(clean_html_entities(item.get("text", ""))).splitlines()[1:]
-        if line.strip()
+        line
+        for line in lines[1:]
+        if line and not line.lower().startswith("источник:")
     )
-    body = body or sanitize_for_script(clean_html_entities(item.get("text", ""))).strip()
+    body = body or raw.strip()
 
     title_ru = title
     replacements = {
@@ -317,7 +319,7 @@ def compress_fact(body_ru: str, title: str = "") -> str:
     if title:
         title_norm = re.escape(title.strip())
         fact = re.sub(rf"^{title_norm}[\s\.\:\-–—]*", "", fact, flags=re.IGNORECASE).strip(" .")
-    return textwrap.shorten(fact, width=135, placeholder="...")
+    return textwrap.shorten(fact, width=185, placeholder="...")
 
 
 def build_russian_title(item: dict, fact: str) -> str:
@@ -390,6 +392,19 @@ def build_hashtags(item: dict) -> str:
     return " ".join(base[:4])
 
 
+def build_listener_value(item: dict, title: str, fact: str) -> str:
+    haystack = f"{clean_html_entities(item.get('text', ''))} {title} {fact}".lower()
+    if any(word in haystack for word in ["video", "runway", "seedance", "veo", "sora", "generator", "render"]):
+        return "для зрителя это важно, потому что новые AI-видео и генераторы обычно быстро меняют качество и скорость продакшна"
+    if any(word in haystack for word in ["image", "images", "midjourney", "photo", "photoshop"]):
+        return "для зрителя это важно, потому что такие апдейты быстро доходят до генерации картинок, рекламы и визуального контента"
+    if any(word in haystack for word in ["voice", "avatar", "audio", "speech"]):
+        return "для зрителя это важно, потому что такие инструменты быстро упрощают озвучку, аватары и вертикальные ролики"
+    if any(word in haystack for word in ["claude", "chatgpt", "gpt", "gemini", "grok"]):
+        return "для зрителя это важно, потому что такие обновления быстро влияют на повседневные сценарии работы, поиска идей и создания контента"
+    return "для зрителя это важно, потому что подобные AI-апдейты очень быстро доходят до обычных продуктов и креаторских инструментов"
+
+
 def sanitize_generated_script(text: str) -> str:
     cleaned = clean_html_entities(text or "")
     cleaned = re.sub(r"(?im)^\s*(хук|hook|стиль|style|заголовок|title|хештеги|hashtags)\s*:\s*", "", cleaned)
@@ -411,35 +426,34 @@ def looks_like_publishable_russian_script(text: str) -> bool:
     return True
 
 
-def build_video_copy_variants(title: str, fact: str) -> list[dict]:
+def build_video_copy_variants(title: str, fact: str, listener_value: str) -> list[dict]:
     variants = [
         {
             "video_title": title,
             "script": (
-                f"Похоже, это одна из тех AI-новостей, которые быстро разлетаются далеко за пределы гиковской аудитории. "
                 f"{title}. "
                 f"Если коротко, {fact}. "
-                f"Главное здесь в том, что выгода считывается почти сразу, особенно если ты делаешь видео, картинки или любой контент."
+                f"И самое важное здесь в том, что {listener_value}."
             ),
             "angle": "массовый охват",
         },
         {
             "video_title": f"{title}: почему об этом все говорят",
             "script": (
-                f"Если ты работаешь с AI-контентом, вот новость, которая реально может сэкономить тебе время и тесты. "
+                f"Если ты следишь за AI-новостями не ради шума, а ради пользы, вот что произошло. "
                 f"{title}. "
-                f"По факту, {fact}. "
-                f"И это как раз тот случай, когда новость не ради шума, а с понятной пользой, которую можно быстро забрать себе в работу."
+                f"По сути, {fact}. "
+                f"Такие вещи расходятся сильнее, когда сразу понятно, что это меняет для обычного пользователя и создателя контента."
             ),
             "angle": "прикладная польза",
         },
         {
             "video_title": f"{title}: что это меняет на практике",
             "script": (
-                f"Вот новость, которую сегодня точно будут пересказывать все, кто делает AI-видео, изображения и контент. "
+                f"Это как раз та AI-новость, которую сегодня будут пересказывать все, кто следит за генерацией контента. "
                 f"{title}. "
                 f"Суть очень простая: {fact}. "
-                f"Именно такие истории цепляют лучше всего, потому что уже в первой фразе понятно, что меняется для обычного пользователя, а не только для разработчиков."
+                f"И здесь цепляет не просто сам релиз, а то, что {listener_value}."
             ),
             "angle": "виральный пересказ",
         },
@@ -470,12 +484,13 @@ def build_script_variants(item: dict) -> list[dict]:
     fact = compress_fact(body_ru, title_ru)
     fact = infer_russian_fact(item, fact)
     title = build_russian_title(item, fact)
+    listener_value = build_listener_value(item, title, fact)
     base_script = payload.get("script_ru")
     notes = payload.get("notes_ru", "")
     using_local_fallback = "локальный fallback" in notes.lower()
 
     stats = best_hook_notes()
-    variants = build_video_copy_variants(title, fact)
+    variants = build_video_copy_variants(title, fact, listener_value)
 
     if base_script and not using_local_fallback and looks_like_publishable_russian_script(base_script):
         variants[0]["script"] = textwrap.shorten(
