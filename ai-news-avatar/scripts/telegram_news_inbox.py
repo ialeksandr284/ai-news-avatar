@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import textwrap
 from datetime import datetime
@@ -147,6 +148,19 @@ def build_render_keyboard(update_id: int, variant: int) -> str:
             "inline_keyboard": [
                 [
                     {"text": f"В рендер вариант {variant}", "callback_data": f"render:{update_id}:{variant}"},
+                ],
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def build_publish_keyboard(update_id: int) -> str:
+    return json.dumps(
+        {
+            "inline_keyboard": [
+                [
+                    {"text": "Окей -> YouTube", "callback_data": f"publish:{update_id}"},
                 ],
             ]
         },
@@ -354,7 +368,7 @@ def build_video_copy_variants(title: str, fact: str) -> list[dict]:
             "angle": "практическая подача",
         },
         {
-            "video_title": title,
+            "video_title": f"{title}: почему об этом все говорят",
             "script": (
                 f"Похоже, это одна из тех AI-новостей, которые быстро расходятся не только у гиков. "
                 f"{title}. "
@@ -364,7 +378,7 @@ def build_video_copy_variants(title: str, fact: str) -> list[dict]:
             "angle": "охватный заход",
         },
         {
-            "video_title": title,
+            "video_title": f"{title}: что это меняет на практике",
             "script": (
                 f"Вот новость, которую сегодня точно будут пересказывать все, кто работает с AI-контентом. "
                 f"{title}. "
@@ -505,6 +519,46 @@ def send_preview(chat_id: int, title: str, preview_url: str) -> None:
     )
 
 
+def send_preview_with_approval(chat_id: int, title: str, preview_url: str, update_id: int) -> None:
+    result = safe_telegram_post(
+        "sendVideo",
+        {
+            "chat_id": chat_id,
+            "video": preview_url,
+            "caption": f"Превью готово\n\n{title}",
+            "reply_markup": build_publish_keyboard(update_id),
+        },
+    )
+    if result.get("ok"):
+        return
+    safe_telegram_post(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": f"Превью готово\n\n{title}\n{preview_url}",
+            "disable_web_page_preview": "false",
+            "reply_markup": build_publish_keyboard(update_id),
+        },
+    )
+
+
+def publish_to_buffer(title: str, text: str, video_url: str) -> tuple[bool, str]:
+    if not BUFFER_CHANNEL_ID:
+        return False, "Не задан BUFFER_CHANNEL_ID"
+    script_path = ROOT / "scripts" / "buffer_publish.py"
+    result = subprocess.run(
+        [sys.executable, str(script_path), BUFFER_CHANNEL_ID, title, text, video_url],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "Buffer publish failed").strip()
+    return True, result.stdout.strip()
+
+
 def update_item_status(items: dict, update_id: int, status: str) -> None:
     key = str(update_id)
     if key in items:
@@ -556,16 +610,34 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
             chosen = variants[variant_idx - 1]
             item["chosen_variant"] = variant_idx
             item["chosen_script"] = chosen["script"]
-            item["chosen_hook"] = chosen["hook"]
+            item["chosen_title"] = chosen["video_title"]
+            item["chosen_hashtags"] = chosen["hashtags"]
         if not chosen:
             text = "Сначала выбери один из трёх сценариев."
         else:
             text = (
                 f"Запускаю рендер варианта {variant_idx}.\n\n"
-                f"Хук: {chosen['hook']}\n\n"
+                f"Заголовок: {chosen['video_title']}\n\n"
                 f"{chosen['script']}"
             )
         update_item_status(items, update_id, "ready_to_render")
+    elif action == "publish":
+        preview_url = item.get("preview_url")
+        chosen_title = item.get("chosen_title")
+        chosen_script = item.get("chosen_script")
+        chosen_hashtags = item.get("chosen_hashtags", "")
+        source_link = item.get("link", "")
+        if not preview_url or not chosen_title or not chosen_script:
+            text = "Сначала нужно получить превью через кнопку `В рендер`."
+        else:
+            publish_text = f"{chosen_script}\n\nИсточник: {source_link}\n{chosen_hashtags}".strip()
+            ok, details = publish_to_buffer(chosen_title, publish_text, preview_url)
+            if ok:
+                update_item_status(items, update_id, "published")
+                text = "Ок, отправил ролик в YouTube через Buffer."
+            else:
+                update_item_status(items, update_id, "publish_failed")
+                text = f"Не смог отправить ролик в Buffer: {details}"
     else:
         text = "Неизвестное действие."
 
@@ -631,7 +703,7 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
             item["did_status"] = result.get("status", "")
             update_item_status(items, update_id, "preview_ready")
             if preview_url:
-                send_preview(chat_id, short_title(item.get("text", "")), preview_url)
+                send_preview_with_approval(chat_id, item.get("chosen_title") or short_title(item.get("text", "")), preview_url, update_id)
             else:
                 safe_telegram_post(
                     "sendMessage",
@@ -654,6 +726,16 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
                     "reply_markup": build_reply_keyboard(),
                 },
             )
+    elif action == "publish":
+        safe_telegram_post(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": "true",
+                "reply_markup": build_reply_keyboard(),
+            },
+        )
     else:
         safe_telegram_post(
             "sendMessage",
@@ -664,7 +746,7 @@ def handle_callback(callback_query: dict, items: dict) -> bool:
                 "reply_markup": build_reply_keyboard(),
             },
         )
-    return action in {"script", "render"}
+    return action in {"script", "render", "publish"}
 
 
 def handle_text_command(text: str, expected_chat_id: int) -> bool:

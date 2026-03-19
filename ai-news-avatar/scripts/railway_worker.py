@@ -62,6 +62,7 @@ def main() -> int:
     state = load_state()
     poll_seconds = int(os.environ.get("TG_POLL_INTERVAL_SECONDS", "60"))
     report_hour = int(os.environ.get("DAILY_REPORT_HOUR_MSK", "19"))
+    auto_scout = os.environ.get("AUTO_NEWS_SCOUT", "false").lower() == "true"
     scout_hours = {
         int(hour.strip())
         for hour in os.environ.get("NEWS_SCOUT_HOURS_MSK", "10,14,18").split(",")
@@ -69,7 +70,7 @@ def main() -> int:
     }
 
     print(
-        f"Railway worker started. Poll interval={poll_seconds}s, daily report hour={report_hour}:00 MSK, scout hours={sorted(scout_hours)}",
+        f"Railway worker started. Poll interval={poll_seconds}s, daily report hour={report_hour}:00 MSK, auto_scout={auto_scout}, scout hours={sorted(scout_hours)}",
         flush=True,
     )
 
@@ -80,7 +81,7 @@ def main() -> int:
         today = now.strftime("%Y-%m-%d")
         scout_key = f"{today}-{now.hour:02d}"
         seen_scout_runs = set(state.get("scout_runs", []))
-        if now.hour in scout_hours and scout_key not in seen_scout_runs:
+        if auto_scout and now.hour in scout_hours and scout_key not in seen_scout_runs:
             run_script("news_scout.py")
             seen_scout_runs.add(scout_key)
             state["scout_runs"] = sorted(seen_scout_runs)[-20:]
